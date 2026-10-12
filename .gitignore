@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local databases, downloaded data, API keys and secrets: never commit
+data/*
+!data/.gitkeep
+.env
+.env.*
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/

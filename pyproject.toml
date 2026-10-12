@@ -1,0 +1,18 @@
+# Project settings. The dependencies stay in requirements.txt.
+
+# Ruff lints and sorts imports only. The code is formatted by hand, as in SportsArb and CryptoUpOrDownTrader, so `ruff format` is not used.
+[tool.ruff]
+line-length = 150
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.isort]
+no-sections = true  # One block of imports: plain imports first, then from imports, each sorted, whatever package they come from.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]                                        # Tests import modules the same way the scripts do from src/.
+addopts = "-q --import-mode=importlib -m 'not network'"     # By path, so test files with the same name in different folders do not collide.
+markers = ["network: calls the real Polymarket and Hyperliquid APIs, run with `python3 -m pytest -m network`"]
