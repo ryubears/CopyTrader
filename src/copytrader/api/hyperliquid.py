@@ -4,14 +4,16 @@ Hyperliquid API client, read only, for finding the accounts worth copying and re
 Two hosts. The info API answers every read as a POST of {"type": ...} to INFO: market data, and an account's positions,
 fills, funding payments, and deposits and withdrawals, with times in milliseconds since 1970. The stats host serves the
 files the app's pages load: the leaderboard, every account with its PnL, ROI, and volume over a day, a week, a month,
-and all time, and the list of vaults. This is the only file that knows Hyperliquid's request types and field names.
-Numbers come as the strings Hyperliquid sends.
+and all time, and the list of vaults. This is the only file that knows Hyperliquid's request types and field names: the
+reads return what Hyperliquid sends, numbers as strings, and the parse functions at the end turn its rows into the
+models the database stores.
 
 The info API allows 1200 weight a minute per IP. Most requests weigh WEIGHT, a few cheap ones LIGHT_WEIGHT, and a call
 that answers with rows one more for every ROWS_PER_WEIGHT of them, charged once the answer is in. A call over time
 answers oldest first with at most a page of rows, see FILLS_PAGE, LEDGER_PAGE, and FUNDING_PAGE, and paged() walks the
-pages. Only an account's 10,000 most recent fills can be read, and only about the 5,000 most recent candles of each
-interval, so older history has to be recorded as it happens. Some very active accounts' fills lag far behind: on
+pages. Hyperliquid documents that only an account's 10,000 most recent fills can be read, though on 2026-10-12 one
+account gave 13,317 back to 2023, and only about the 5,000 most recent candles of each interval are kept, so older
+history has to be recorded as it happens. Some very active accounts' fills lag far behind: on
 2026-10-08 one account trading that minute had no fill newer than 80 minutes, and another none newer than 6 months.
 Their positions, from positions(), are live.
 
@@ -21,7 +23,9 @@ dexes, HIP-3, such as "xyz" for stocks and commodities, prefix their coins, "xyz
 them and its spot trades too, see is_crypto_perp().
 """
 
+import json
 from copytrader.api.http import RateLimiter, get_json, post_json
+from copytrader.db.models import AccountState, Fill, Funding, LedgerUpdate, Position, Standing
 
 INFO = "https://api.hyperliquid.xyz/info"
 STATS = "https://stats-data.hyperliquid.xyz/Mainnet"    # The files behind the app's leaderboard and vaults pages.
@@ -193,8 +197,8 @@ def recent_fills(user):
 
 def fills(user, start=0, end=None):
     """
-    An account's fills from start to end, in milliseconds since 1970, oldest first, on every dex and spot. Only its
-    10,000 most recent can be read.
+    An account's fills from start to end, in milliseconds since 1970, oldest first, on every dex and spot. Hyperliquid
+    documents that only its 10,000 most recent can be read, though some accounts give more.
     """
     return paged({"type": "userFillsByTime", "user": user}, start, end, FILLS_PAGE)
 
@@ -213,3 +217,91 @@ def ledger(user, start=0, end=None):
     oldest first.
     """
     return paged({"type": "userNonFundingLedgerUpdates", "user": user}, start, end, LEDGER_PAGE)
+
+
+# ROWS
+
+def number(value):
+    """
+    A number Hyperliquid sends as a string, as a float, or None for a missing one.
+    """
+    return float(value) if value not in (None, "") else None
+
+
+def parse_standings(row, day, recorded_at):
+    """
+    The Standings of one leaderboard row, one for each of its windows, "day", "week", "month", and "allTime", recorded
+    on a UTC day at a time in seconds since 1970.
+    """
+    address, value = row["ethAddress"].lower(), number(row.get("accountValue"))
+    return [Standing("hyperliquid", day, window, address, None, float(p["pnl"]), number(p.get("roi")), float(p["vlm"]), value, recorded_at)
+            for window, p in row["windowPerformances"]]
+
+
+def parse_fill(address, f):
+    """
+    A Fill from one fill of fills() or recent_fills().
+    """
+    return Fill(
+        address=address,
+        tid=f["tid"],
+        order_id=f["oid"],
+        time=f["time"],
+        coin=f["coin"],
+        side=f["side"],
+        price=float(f["px"]),
+        size=float(f["sz"]),
+        direction=f.get("dir"),
+        start_position=number(f.get("startPosition")),
+        closed_pnl=number(f.get("closedPnl")),
+        fee=number(f.get("fee")),
+        fee_token=f.get("feeToken"),
+        crossed=f.get("crossed"),
+        hash=f.get("hash"),
+        twap_id=f.get("twapId"),
+        liquidation=json.dumps(f["liquidation"]) if f.get("liquidation") else None,
+    )
+
+
+def parse_funding(address, row):
+    """
+    A Funding from one payment of funding_payments().
+    """
+    delta = row["delta"]
+    return Funding(address, row["time"], delta["coin"], float(delta["usdc"]), float(delta["szi"]), float(delta["fundingRate"]))
+
+
+def parse_ledger(address, row):
+    """
+    A LedgerUpdate from one row of ledger(). The change is kept whole as JSON, its keys sorted, since its fields differ by
+    kind and a read of the same row again must match it.
+    """
+    delta = row["delta"]
+    return LedgerUpdate(address, row["time"], row["hash"], delta["type"], number(delta.get("usdc")), json.dumps(delta, sort_keys=True))
+
+
+def parse_account(address, state):
+    """
+    The AccountState and the Positions of one positions() answer, all at Hyperliquid's time for it.
+    """
+    summary, time = state["marginSummary"], state["time"]
+    account = AccountState(address, time, float(summary["accountValue"]), float(summary["totalNtlPos"]), float(summary["totalMarginUsed"]),
+                           float(state["withdrawable"]))
+    positions = []
+    for entry in state["assetPositions"]:
+        p = entry["position"]
+        leverage = p.get("leverage") or {}
+        positions.append(Position(
+            address=address,
+            time=time,
+            coin=p["coin"],
+            size=float(p["szi"]),
+            entry_price=number(p.get("entryPx")),
+            position_value=number(p.get("positionValue")),
+            unrealized_pnl=number(p.get("unrealizedPnl")),
+            leverage=number(leverage.get("value")),
+            leverage_type=leverage.get("type"),
+            liquidation_price=number(p.get("liquidationPx")),
+            margin_used=number(p.get("marginUsed")),
+        ))
+    return account, positions

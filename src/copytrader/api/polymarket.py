@@ -4,7 +4,8 @@ Polymarket API client, read only, for finding the traders worth copying and read
 Polymarket spreads its data over three hosts. Gamma lists the events and markets, with their tags and, once they
 resolve, their outcomes. The order book host keeps each outcome's book and price history. The data host keeps each
 trader's trades, activity, and positions, and the leaderboard. This is the only file that knows Polymarket's field
-names. The data host's times are in seconds since 1970.
+names: the reads return what Polymarket sends, and the parse functions at the end turn its rows into the models the
+database stores. The data host's times are in seconds since 1970.
 
 A trader is their proxy wallet's address, not that of the key that signs their orders. A market, its conditionId, has
 one token per outcome, and the order book host knows an outcome by its token id, which Gamma gives in clobTokenIds.
@@ -19,7 +20,10 @@ cursor.
 """
 
 import itertools
+import json
+from collections import Counter
 from copytrader.api.http import RateLimiter, get_json
+from copytrader.db.models import Activity, Market, Standing
 
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
@@ -29,6 +33,7 @@ CLOB_LIMITER = RateLimiter(50)      # Half the 1000 per 10 seconds documented fo
 DATA_LIMITER = RateLimiter(10)      # Two thirds of the 150 per 10 seconds documented for /positions, the data host's lowest.
 SPORTS_TAG = 1
 POLITICS_TAG = 2
+CATEGORIES = ("sports", "politics")   # The tags' slugs a market's category comes from, see parse_market().
 KEYSET_PAGE = 100               # The most markets or events one keyset call answers with.
 TRADES_PAGE = 500               # Trades per /trades call.
 TRADES_MAX_OFFSET = 10_000      # The furthest offset /trades takes.
@@ -211,3 +216,77 @@ def value(user):
     """
     rows = get_json(f"{DATA}/value", {"user": user}, DATA_LIMITER)
     return float(rows[0]["value"]) if rows else 0.0
+
+
+# ROWS
+
+def parse_standing(row, board, day, recorded_at):
+    """
+    A Standing from one row of a leaderboard board, named as "SPORTS/MONTH/PNL", recorded on a UTC day at a time in
+    seconds since 1970.
+    """
+    return Standing("polymarket", day, board, row["proxyWallet"].lower(), int(row["rank"]), float(row["pnl"]), None, float(row["vol"]), None,
+                    recorded_at)
+
+
+def parse_market(m, updated_at):
+    """
+    A Market from one market of markets(), read with include_tag=True so its tags come with it. Its category is the
+    first of CATEGORIES among its tags.
+    """
+    tags = [t["slug"] for t in m.get("tags") or []]
+    return Market(
+        condition_id=m["conditionId"],
+        market_id=str(m["id"]),
+        slug=m.get("slug"),
+        question=m.get("question") or "",
+        event_slug=(m.get("events") or [{}])[0].get("slug"),
+        category=next((c for c in CATEGORIES if c in tags), None),
+        tags=json.dumps(tags) if "tags" in m else None,
+        market_type=m.get("sportsMarketType"),
+        neg_risk=m.get("negRisk"),
+        game_start=m.get("gameStartTime"),
+        end_date=m.get("endDate"),
+        closed=bool(m.get("closed")),
+        closed_time=m.get("closedTime"),
+        outcomes=m.get("outcomes") or "[]",         # Already JSON, as Gamma sends these three.
+        token_ids=m.get("clobTokenIds") or "[]",
+        outcome_prices=m.get("outcomePrices"),
+        resolution=m.get("umaResolutionStatus"),
+        updated_at=updated_at,
+    )
+
+
+def parse_activity(rows):
+    """
+    The Activity of rows from activity(), in its order. Two rows of one transaction can be the same in every field, as
+    when one order fills against two makers alike, so each row's seq counts the rows like it in its transaction before
+    it. That keeps them apart in the table, and a second read of the same rows stores nothing new. activity() keeps
+    the rows of one second together, so the count starts over at each new second.
+    """
+    seen, second = Counter(), None
+    for r in rows:
+        if r["timestamp"] != second:
+            seen.clear()
+            second = r["timestamp"]
+        activity = Activity(
+            address=r["proxyWallet"].lower(),
+            timestamp=r["timestamp"],
+            type=r["type"],
+            condition_id=r.get("conditionId") or "",
+            asset=r.get("asset") or "",
+            outcome=r.get("outcome") or None,
+            outcome_index=r.get("outcomeIndex"),
+            side=r.get("side") or "",
+            size=float(r.get("size") or 0),
+            usdc_size=float(r.get("usdcSize") or 0),
+            price=float(r.get("price") or 0),
+            tx_hash=r["transactionHash"],
+            slug=r.get("slug") or None,
+            event_slug=r.get("eventSlug") or None,
+            seq=0,
+        )
+        key = (activity.tx_hash, activity.type, activity.asset, activity.side, activity.size, activity.usdc_size, activity.price)
+        activity.seq = seen[key]
+        seen[key] += 1
+        yield activity
