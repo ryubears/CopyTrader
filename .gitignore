@@ -15,6 +15,7 @@ data/*
 !data/.gitkeep
 .env
 .env.*
+commands.txt
 
 # Editors and OS
 .DS_Store

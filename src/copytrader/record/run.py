@@ -11,20 +11,24 @@ every STATUS_SECONDS.
 What has been read is in the database, so stopping, or this machine sleeping, loses nothing but time, as long as it is
 back before the fills Hyperliquid keeps of a followed account have moved past the last one stored: on starting again it
 reads whatever came due meanwhile. A day whose standings were missed is lost. It only reads, nothing trades. Ctrl-C or
-kill stops it, and each write is a transaction of its own, so nothing is left half written.
+kill stops it, and each write is a transaction of its own, so nothing is left half written. The first line it logs says
+the commit it runs.
 
 Run from src/ with:
     python3 -m copytrader.record.run
-    python3 -m copytrader.record.run --seconds 600
+    python3 -m copytrader.record.run --seconds 600 --db /tmp/check.sqlite
 
 --seconds is checked between passes, so the last pass may run past it, by minutes while the first reads of newly followed
 accounts' whole histories are under way.
 """
 
 import argparse
+import signal
+import subprocess
 import time
 from collections import Counter
 from copytrader.common.log import log, with_traceback
+from copytrader.common.paths import ROOT
 from copytrader.db import database
 from copytrader.record import accounts, standings
 
@@ -62,6 +66,18 @@ def status(conn, now, totals):
     return f"since the start: {stored}. accounts due: {waiting}"
 
 
+def code_version():
+    """
+    The commit the process runs, with '-dirty' when files differ from it, or 'unknown' outside a git checkout, so the log
+    says what code recorded what follows it.
+    """
+    try:
+        return subprocess.run(["git", "describe", "--always", "--dirty"], cwd=ROOT, capture_output=True, text=True,
+                              timeout=5).stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
 def record(conn, seconds=None, log=log):
     """
     Record until seconds have passed, or for good without.
@@ -69,7 +85,7 @@ def record(conn, seconds=None, log=log):
     started = last_status = time.time()
     tried, totals = {}, Counter()
     log(f"recording, {len(database.traders(conn, 'hyperliquid')):,} Hyperliquid and {len(database.traders(conn, 'polymarket')):,} "
-        f"Polymarket traders followed so far")
+        f"Polymarket traders followed so far, with code {code_version()}")
     while seconds is None or time.time() - started < seconds:
         now = time.time()
         busy = record_standings(conn, now, tried, log)
@@ -93,8 +109,10 @@ def record(conn, seconds=None, log=log):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Record the venues' leaderboards and the followed Hyperliquid accounts into SQLite.")
     ap.add_argument("--seconds", type=float, help="stop after this long, by default run until stopped")
+    ap.add_argument("--db", help="the database to record into, by default data/copytrader.sqlite, another for a trial run")
     args = ap.parse_args()
+    signal.signal(signal.SIGTERM, signal.default_int_handler)      # A kill, as from systemd, stops it as Ctrl-C does.
     try:
-        record(database.connect(), args.seconds)
+        record(database.connect(args.db), args.seconds)
     except KeyboardInterrupt:
         log("stopped")

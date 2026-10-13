@@ -30,11 +30,23 @@ CREATE TABLE IF NOT EXISTS standings (
     PRIMARY KEY (venue, day, board, address)
 ) WITHOUT ROWID;
 
+-- Each candidate trader's PnL over time, as the venues chart it on their own account pages, for the persistence test,
+-- see history/pnl.py: Polymarket's daily across every category, and Hyperliquid's perps alone, a point about every two
+-- weeks over the account's life.
+CREATE TABLE IF NOT EXISTS pnl_history (
+    venue          TEXT NOT NULL,
+    address        TEXT NOT NULL,
+    time           INTEGER NOT NULL,    -- Seconds since 1970.
+    pnl            REAL NOT NULL,       -- Dollars won or lost since the account began, by then.
+    account_value  REAL,                -- Hyperliquid's account value then. Polymarket's chart gives none.
+    PRIMARY KEY (venue, address, time)
+) WITHOUT ROWID;
+
 -- When each followed account was last read, for each kind of read, so each comes due on its own schedule.
 CREATE TABLE IF NOT EXISTS syncs (
     venue      TEXT NOT NULL,
     address    TEXT NOT NULL,
-    kind       TEXT NOT NULL,       -- 'fills', 'positions', 'funding', or 'ledger'.
+    kind       TEXT NOT NULL,       -- 'fills', 'positions', 'funding', or 'ledger', or a backfill's, 'pnl' or 'activity'.
     synced_at  REAL NOT NULL,       -- When the last read, or try, finished.
     PRIMARY KEY (venue, address, kind)
 ) WITHOUT ROWID;
@@ -123,6 +135,7 @@ CREATE TABLE IF NOT EXISTS pm_markets (
     tags            TEXT,               -- JSON list of its tags' slugs.
     market_type     TEXT,               -- A sports market's kind: 'moneyline', 'spreads', 'totals', and the like.
     neg_risk        INTEGER,            -- 1 when one outcome of an event with several, where a No converts into a Yes on each other.
+    start_date      TEXT,               -- When it opened for trading, ISO 8601 UTC.
     game_start      TEXT,               -- When a game starts, in UTC as Gamma writes it, '2026-10-12 15:00:00+00', so trades during it stand out.
     end_date        TEXT,               -- When it is expected to resolve, ISO 8601 UTC.
     closed          INTEGER NOT NULL,   -- 1 once trading has stopped.
@@ -131,6 +144,7 @@ CREATE TABLE IF NOT EXISTS pm_markets (
     token_ids       TEXT NOT NULL,      -- JSON list of the outcomes' token ids, in the same order.
     outcome_prices  TEXT,               -- JSON list in the same order. Once resolved, 1 for the winner and 0 for the rest.
     resolution      TEXT,               -- UMA's status, 'resolved' once final.
+    volume          REAL,               -- Dollars traded in it, all told.
     updated_at      REAL NOT NULL       -- When it was last read.
 );
 
@@ -155,3 +169,69 @@ CREATE TABLE IF NOT EXISTS pm_activity (
 ) WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS idx_pm_activity_time ON pm_activity (address, timestamp);
+
+-- The polymarket.com events the stored markets belong to, for the game each is, to match its markets with Polymarket US's.
+CREATE TABLE IF NOT EXISTS pm_events (
+    event_slug   TEXT PRIMARY KEY,
+    event_id     TEXT NOT NULL,     -- Gamma's id.
+    game_id      INTEGER,           -- The game's id in Polymarket's sports data, the same on Polymarket US. Null if not a game.
+    title        TEXT NOT NULL,
+    start_time   TEXT,              -- When a game starts, ISO 8601 UTC.
+    series_slug  TEXT,              -- 'nfl-2025', 'fomc', and the like.
+    updated_at   REAL NOT NULL      -- When it was last read.
+);
+
+-- Polymarket US's markets that a polymarket.com market traded by a followed trader might match: the markets of its games
+-- that polymarket.com's events share, by game_id, and of its events that are not games.
+CREATE TABLE IF NOT EXISTS us_markets (
+    slug                TEXT PRIMARY KEY,
+    market_id           TEXT NOT NULL,
+    event_slug          TEXT NOT NULL,
+    game_id             INTEGER,            -- Its event's game, as on polymarket.com. Null if not a game.
+    category            TEXT,               -- 'sports', 'politics', and the like.
+    market_type         TEXT,               -- 'moneyline', 'totals', 'spreads', 'futures', 'props', and the like.
+    sports_market_type  TEXT,               -- Finer: 'football_team_full_game_winner', and the like.
+    question            TEXT NOT NULL,
+    title               TEXT,
+    outcomes            TEXT NOT NULL,      -- JSON list.
+    long_outcome        TEXT,               -- The outcome the long side holds, as its side names it, not always the first.
+    outcome_prices      TEXT,               -- JSON list in the outcomes' order. Once resolved, 1 for the winner and 0 for the other.
+    closed              INTEGER NOT NULL,
+    status              TEXT,               -- 'MARKET_STATUS_RESOLVED', and the like.
+    game_start          TEXT,               -- ISO 8601 UTC.
+    end_date            TEXT,
+    fee_coefficient     REAL,               -- The taker fee's coefficient: fee = coefficient * contracts * p * (1 - p).
+    updated_at          REAL NOT NULL       -- When it was last read.
+);
+
+CREATE INDEX IF NOT EXISTS idx_us_markets_game ON us_markets (game_id);
+
+-- What buying either side of a Polymarket US market cost, about once a minute, around the times a copy would have traded.
+CREATE TABLE IF NOT EXISTS us_prices (
+    slug         TEXT NOT NULL,
+    time         INTEGER NOT NULL,     -- Seconds since 1970.
+    long_price   REAL,                 -- The long side's display price, normally its best ask.
+    short_price  REAL,                 -- The short side's, normally one less the long side's best bid.
+    PRIMARY KEY (slug, time)
+) WITHOUT ROWID;
+
+-- The stretches of each Polymarket US market's price history read, so none is read twice, even one that held nothing.
+CREATE TABLE IF NOT EXISTS us_price_reads (
+    slug     TEXT NOT NULL,
+    start    INTEGER NOT NULL,         -- Seconds since 1970.
+    end      INTEGER NOT NULL,
+    points   INTEGER NOT NULL,         -- How many prices it held.
+    read_at  REAL NOT NULL,
+    PRIMARY KEY (slug, start)
+) WITHOUT ROWID;
+
+-- Snapshots of Polymarket US's order books, for how much an order of a size pays above the best price.
+CREATE TABLE IF NOT EXISTS us_books (
+    slug       TEXT NOT NULL,
+    time       INTEGER NOT NULL,       -- Seconds since 1970.
+    side       TEXT NOT NULL,          -- 'bid' or 'offer', of the long side. The short side's offers are the long side's bids.
+    level      INTEGER NOT NULL,       -- 0 for the best.
+    price      REAL NOT NULL,
+    contracts  REAL NOT NULL,
+    PRIMARY KEY (slug, time, side, level)
+) WITHOUT ROWID;

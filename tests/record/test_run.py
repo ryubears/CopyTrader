@@ -44,8 +44,14 @@ def test_record_passes_until_its_time_is_up_then_says_what_it_stored(tmp_path, m
         return {"fills": (1, 5) if len(passes) == 1 else (0, 0)}
 
     monkeypatch.setattr(accounts, "read_due", read_due)
+    monkeypatch.setattr(run, "code_version", lambda: "cd286cd-dirty")
     logs = []
     started = time.time()
     run.record(conn, seconds=0.2, log=logs.append)
     assert 0.2 <= time.time() - started < 1 and len(passes) > 2
+    assert logs[0] == "recording, 0 Hyperliquid and 0 Polymarket traders followed so far, with code cd286cd-dirty"
     assert logs[-1].startswith("since the start: 0 roles stored, 5 fills rows")
+
+
+def test_the_code_version_names_this_checkouts_commit():
+    assert run.code_version() != "unknown"

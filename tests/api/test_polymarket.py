@@ -11,7 +11,8 @@ from copytrader.api import polymarket
 # Rows as Polymarket sends them, cut down from real answers.
 MARKET = {"id": "5524031", "conditionId": "0x3e6f", "slug": "wta-iatcenk-tan-2026-10-12-completed-match", "negRisk": False,
           "question": "Rovereto: Completed Match: Polina Iatcenko vs Harmony Tan", "closed": True, "closedTime": "2026-10-12 17:35:00.151622+00",
-          "endDate": "2026-10-19T08:00:00Z", "gameStartTime": "2026-10-12 15:00:00+00", "sportsMarketType": "moneyline",
+          "startDate": "2026-10-11T15:02:11.432Z", "endDate": "2026-10-19T08:00:00Z", "gameStartTime": "2026-10-12 15:00:00+00",
+          "sportsMarketType": "moneyline", "volumeNum": 18250.5,
           "outcomes": '["Yes", "No"]', "outcomePrices": '["1", "0"]', "clobTokenIds": '["1341", "7722"]', "umaResolutionStatus": "resolved",
           "events": [{"id": "1167237", "slug": "wta-iatcenk-tan-2026-10-12"}],
           "tags": [{"slug": "tennis"}, {"slug": "sports"}, {"slug": "games"}]}
@@ -134,6 +135,7 @@ def test_a_market_takes_its_category_from_its_tags():
     assert (found.condition_id, found.market_id, found.event_slug, found.category, found.market_type) == \
         ("0x3e6f", "5524031", "wta-iatcenk-tan-2026-10-12", "sports", "moneyline")
     assert (found.closed, found.outcome_prices, found.token_ids, found.resolution) == (True, '["1", "0"]', '["1341", "7722"]', "resolved")
+    assert (found.start_date, found.volume) == ("2026-10-11T15:02:11.432Z", 18250.5)
     assert json.loads(found.tags) == ["tennis", "sports", "games"]
     assert polymarket.parse_market({**MARKET, "tags": [{"slug": "crypto"}]}, 0).category is None
     assert polymarket.parse_market({k: v for k, v in MARKET.items() if k != "tags"}, 0).tags is None    # Read without include_tag.
@@ -147,3 +149,9 @@ def test_activity_rows_alike_in_one_transaction_are_numbered_apart():
     assert (trade.address, trade.side, trade.size, trade.usdc_size, trade.outcome_index) == \
         ("0x51698a47f840a242abc2ca0351371c7ffac41842", "BUY", 43.233332, 25.94, 0)
     assert (rebate.condition_id, rebate.asset, rebate.side, rebate.outcome, rebate.slug) == ("", "", "", None, None)
+
+
+def test_a_pnl_chart_gives_a_point_a_day():
+    found = polymarket.parse_pnl("0xa", [{"t": 1788912000, "p": 683444}, {"t": 1788998400, "p": 996377.3}])
+    assert [(p.venue, p.address, p.time, p.pnl, p.account_value) for p in found] == [("polymarket", "0xa", 1788912000, 683444.0, None),
+                                                                                    ("polymarket", "0xa", 1788998400, 996377.3, None)]

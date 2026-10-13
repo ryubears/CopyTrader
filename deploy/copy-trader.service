@@ -1,0 +1,21 @@
+# The recorder as a systemd service on the AWS instance, installed by deploy/setup.sh. Runs as ubuntu from the repo's src/,
+# starts on boot, restarts on any exit, and appends what it prints to data/logs/record.log, as the runs on the Mac did. A
+# stop sends SIGTERM, on which the recorder logs "stopped".
+
+[Unit]
+Description=CopyTrader recorder: the venues' leaderboards and the followed Hyperliquid accounts
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/CopyTrader/src
+ExecStart=/usr/bin/python3 -m copytrader.record.run
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+StandardOutput=append:/home/ubuntu/CopyTrader/data/logs/record.log
+StandardError=append:/home/ubuntu/CopyTrader/data/logs/record.log
+
+[Install]
+WantedBy=multi-user.target

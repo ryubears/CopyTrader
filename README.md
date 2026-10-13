@@ -17,9 +17,11 @@ since today's leaderboard already knows who did well.
 ## How it works
 
 Everything lives in `src/copytrader/`, a package without `__init__.py`
-files, imported as `from copytrader.api import polymarket`. So far that
-is the venue clients in `api/`, the database in `db/`, and the recorder
-in `record/`, which keeps what the venues will not keep for us.
+files, imported as `from copytrader.api import polymarket`: the venue
+clients in `api/`, the database in `db/`, the recorder in `record/`,
+which keeps what the venues will not keep for us, the backfills in
+`history/`, which read what they still have, and the research in
+`analysis/`.
 
 The venue clients read the traders, their trades, and the markets. They
 are thin: requests, paging, rate limits, and retries, and no database
@@ -47,6 +49,13 @@ their positions are live. A fill names its coin, and `is_crypto_perp()`
 tells the crypto perps from the stock perps and spot pairs an account
 may trade too.
 
+`api/polymarket_us.py` reads Polymarket US, Polymarket's exchange for
+the US, where a copy would trade: its events and markets, each market's
+order book, and each market's best prices about once a minute, back to
+its first markets in late 2025. Its markets are not polymarket.com's,
+but a game's event carries the same game id on both, which is how the
+two are matched.
+
 `api/http.py` is what they share: one connection pool, a rate limiter
 per host, weighted for Hyperliquid, and retries of network errors, rate
 limit answers, and server errors, waiting as long as the server asks.
@@ -72,7 +81,58 @@ and deposits and withdrawals once a day. Its first read reaches a year
 back, and a read takes at most 20,000 rows, stored as they come, so a
 long history is read in pieces, one a pass. A Polymarket trader's whole
 history can be read whenever it is wanted, so following them only lists
-them for the backfill that comes next.
+them for the backfill.
+
+`history/pnl.py` reads each candidate trader's PnL over time, as the
+venue charts it on their own page: Polymarket's profile chart, a point a
+day across every category, and Hyperliquid's portfolio, perps alone, a
+point about every two weeks over the account's life. The candidates are
+drawn wide, so the record is not of the winners alone: every trader on
+any of the latest day's Polymarket boards, about 8,000, and every
+Hyperliquid account but vaults that traded $100 million over its life,
+about 7,100, more than half of them no longer trading.
+
+`history/polymarket.py` reads the followed Polymarket traders' activity
+and the markets it touched, with how each resolved. Most traders make a
+few thousand rows a year and are read back 180 days. A few make tens of
+thousands a month, too fast for a copy to follow, and only their latest
+20,000 rows are read, enough to tell what they are.
+
+`analysis/persistence.py` asks whether the traders at the top stay
+there. It cuts time into 28 day periods, ranks the traders by their PnL
+in each, and, on Hyperliquid, by their return on the account's value,
+and reports how the top tenth, the top 50, everyone, and the bottom
+tenth did in the next period: how many made money, and their median.
+If the top does no better than everyone, copying the top is copying
+luck.
+
+`analysis/traders.py` rebuilds each followed trader's results from what
+they did: on Polymarket, their PnL in each resolved sports and politics
+market, from their trades, splits, merges, and redeems and the market's
+payout, and on Hyperliquid their realized PnL on crypto perps less fees.
+It sorts them into kinds: too few markets to judge, bots too fast to
+copy, one-hit wonders, buyers of near certain favorites, and the
+directional traders a copy might follow.
+
+`history/polymarket_us.py` reads what pricing a copy on Polymarket US
+takes: the game of each polymarket.com event the stored markets belong
+to, Polymarket US's markets of those games and of its events that are
+not games, and Polymarket US's prices around each trade a copy might
+make. `analysis/match.py` matches the markets of the two venues: within
+a game, by the slug polymarket.com's market and Polymarket US's share
+behind a prefix, or for a moneyline, by its two outcomes. Futures and
+politics do not match yet.
+
+`analysis/copy.py` simulates copying polymarket.com traders on Polymarket
+US. Each 28 day period it ranks the traders on a volume board by the
+Sharpe ratio of their daily PnL over the 84 days before, which picked
+traders who made money in the next period far more often than their
+PnL did, drops the bots, and copies the top 25: their buys in matched
+markets a minute to an hour late at Polymarket US's best ask, and their
+sales at its best bid, each order paying Polymarket US's taker fee,
+with $10,000 or $100,000. Beside each copy runs its ideal, the same
+dollars at the traders' own prices without fees, so what the copy makes
+less is what copying costs.
 
 ## Running it
 
@@ -83,9 +143,44 @@ lints and checks the imports' order. The code is formatted by hand, so
 `ruff format` is not used.
 
 The recorder runs from `src/` with `python3 -m copytrader.record.run`,
-until stopped. What it has read is in the database, so it can be stopped
-and started again at any time, and it picks up what came due meanwhile.
-Only a day it does not run at all loses that day's leaderboards, and an
-account that makes more fills while it is stopped than Hyperliquid keeps
-loses the oldest of them. Its first hours go to reading each newly
-followed account's last year, as far as Hyperliquid keeps it.
+until stopped, and `--seconds 120 --db /tmp/check.sqlite` tries it for
+two minutes on a database of its own. What it has read is in the
+database, so it can be stopped and started again at any time, and it
+picks up what came due meanwhile. Only a day it does not run at all
+loses that day's leaderboards, and an account that makes more fills
+while it is stopped than Hyperliquid keeps loses the oldest of them.
+Its first hours go to reading each newly followed account's last year,
+as far as Hyperliquid keeps it.
+
+The backfills run from `src/` the same way, and can run beside the
+recorder, each keeping to half of Hyperliquid's limit:
+`python3 -m copytrader.history.pnl` for the PnL histories, a few hours,
+and `python3 -m copytrader.history.polymarket` for the followed traders'
+activity, several. Either can be stopped and run again, and picks up
+where it stopped. Then `python3 -m copytrader.analysis.persistence
+--venue hyperliquid` and `python3 -m copytrader.analysis.traders --venue
+polymarket` print their reports.
+
+The copy simulation needs three more backfills, in order: `python3 -m
+copytrader.history.polymarket --copy-candidates` reads the activity of
+the traders it might copy, `python3 -m copytrader.history.polymarket_us`
+reads the games, Polymarket US's markets, and its prices, and then
+`python3 -m copytrader.analysis.copy` prints the simulation.
+
+## Deployment
+
+- **Instance:** an m7a.medium in us-east-1, beside the instances of
+  PredictionArbitrageTrader and CryptoUpOrDownTrader, where Polymarket
+  US's exchange runs, set up by `deploy/setup.sh` on Ubuntu 24.04 and
+  its Python 3.12.
+- **Service:** the systemd service `copy-trader`, in
+  `deploy/copy-trader.service`, runs the recorder from `~/CopyTrader/src`.
+  It starts on boot, restarts on any exit, and logs to
+  `data/logs/record.log`, the first line of each run saying its commit.
+- **Backfills and analyses:** run by hand on the instance, at the lowest
+  priority, the backfills with `nohup` into `data/logs/`, against the live
+  database.
+- **Deploying:** `git pull` on the instance, then the tests, then a
+  service restart only if they pass.
+- **Operating:** `commands.txt`, gitignored and kept on the operator's
+  machine, holds the commands to check, deploy, and operate the instance.

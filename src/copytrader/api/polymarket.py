@@ -23,14 +23,16 @@ import itertools
 import json
 from collections import Counter
 from copytrader.api.http import RateLimiter, get_json
-from copytrader.db.models import Activity, Market, Standing
+from copytrader.db.models import Activity, Event, Market, PnlPoint, Standing
 
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
 DATA = "https://data-api.polymarket.com"
+USER_PNL = "https://user-pnl-api.polymarket.com"     # The host behind the PnL chart of a trader's profile page.
 GAMMA_LIMITER = RateLimiter(25)     # Requests a second. Polymarket documents 300 per 10 seconds for Gamma's /markets, its lowest.
 CLOB_LIMITER = RateLimiter(50)      # Half the 1000 per 10 seconds documented for price history, the book host's lowest that is used.
 DATA_LIMITER = RateLimiter(10)      # Two thirds of the 150 per 10 seconds documented for /positions, the data host's lowest.
+PNL_LIMITER = RateLimiter(5)        # USER_PNL documents no limit, so this keeps low.
 SPORTS_TAG = 1
 POLITICS_TAG = 2
 CATEGORIES = ("sports", "politics")   # The tags' slugs a market's category comes from, see parse_market().
@@ -162,6 +164,14 @@ def trades(user=None, market=None, taker_only=False):
     return offset_paged("/trades", params, TRADES_PAGE, TRADES_MAX_OFFSET)
 
 
+def latest_activity(user, limit=ACTIVITY_PAGE):
+    """
+    A trader's latest activity, newest first, one call of up to limit rows.
+    """
+    params = {"user": user, "sortBy": "TIMESTAMP", "sortDirection": "DESC", "limit": limit, "offset": 0}
+    return get_json(f"{DATA}/activity", params, DATA_LIMITER)
+
+
 def activity(user, types=None, market=None, start=None, end=None):
     """
     A trader's activity from start to end, in seconds since 1970 and both included, oldest first: trades, splits,
@@ -210,6 +220,14 @@ def holders(market, limit=20):
     return get_json(f"{DATA}/holders", {"market": market, "limit": limit}, DATA_LIMITER)
 
 
+def pnl_history(user, interval="all", fidelity="1d"):
+    """
+    A trader's PnL since they began, across every category, as [{"t": seconds since 1970, "p": dollars}], over an
+    interval back from now, "all" by default, a point every fidelity, "1d" by default, as their profile page charts it.
+    """
+    return get_json(f"{USER_PNL}/user-pnl", {"user_address": user, "interval": interval, "fidelity": fidelity}, PNL_LIMITER)
+
+
 def value(user):
     """
     What a trader's open positions are worth now, in dollars.
@@ -245,6 +263,7 @@ def parse_market(m, updated_at):
         tags=json.dumps(tags) if "tags" in m else None,
         market_type=m.get("sportsMarketType"),
         neg_risk=m.get("negRisk"),
+        start_date=m.get("startDate"),
         game_start=m.get("gameStartTime"),
         end_date=m.get("endDate"),
         closed=bool(m.get("closed")),
@@ -253,6 +272,22 @@ def parse_market(m, updated_at):
         token_ids=m.get("clobTokenIds") or "[]",
         outcome_prices=m.get("outcomePrices"),
         resolution=m.get("umaResolutionStatus"),
+        volume=float(m["volumeNum"]) if m.get("volumeNum") is not None else None,
+        updated_at=updated_at,
+    )
+
+
+def parse_event(e, updated_at):
+    """
+    An Event from one event of events(). A game's event carries gameId, the game's id in Polymarket's sports data.
+    """
+    return Event(
+        event_slug=e["slug"],
+        event_id=str(e["id"]),
+        game_id=e.get("gameId"),
+        title=e.get("title") or "",
+        start_time=e.get("startTime"),
+        series_slug=e.get("seriesSlug"),
         updated_at=updated_at,
     )
 
@@ -290,3 +325,10 @@ def parse_activity(rows):
         activity.seq = seen[key]
         seen[key] += 1
         yield activity
+
+
+def parse_pnl(address, points):
+    """
+    The PnlPoints of one pnl_history() answer.
+    """
+    return [PnlPoint("polymarket", address, int(p["t"]), float(p["p"]), None) for p in points]

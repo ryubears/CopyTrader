@@ -61,7 +61,7 @@ def store_rows(conn, rows, parse):
     Returns how many were new, and whether the rows ran out before ROWS_PER_READ.
     """
     stored = taken = 0
-    for chunk in itertools.batched(itertools.islice(rows, ROWS_PER_READ), CHUNK, strict=False):     # The last chunk may be short.
+    for chunk in itertools.batched(itertools.islice(rows, ROWS_PER_READ), CHUNK):      # The last chunk may be short.
         stored += database.store(conn, [parse(row) for row in chunk])
         taken += len(chunk)
     return stored, taken < ROWS_PER_READ

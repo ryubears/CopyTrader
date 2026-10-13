@@ -25,11 +25,12 @@ them and its spot trades too, see is_crypto_perp().
 
 import json
 from copytrader.api.http import RateLimiter, get_json, post_json
-from copytrader.db.models import AccountState, Fill, Funding, LedgerUpdate, Position, Standing
+from copytrader.db.models import AccountState, Fill, Funding, LedgerUpdate, PnlPoint, Position, Standing
 
 INFO = "https://api.hyperliquid.xyz/info"
 STATS = "https://stats-data.hyperliquid.xyz/Mainnet"    # The files behind the app's leaderboard and vaults pages.
-LIMITER = RateLimiter(20, burst=1200)   # Weight a second. Hyperliquid allows 1200 a minute per IP, and a backfill needs all of it.
+LIMITER = RateLimiter(10, burst=600)    # Weight a second. Hyperliquid allows 1200 a minute per IP, and this keeps to half, so the recorder
+                                        # and a backfill can run at once.
 WEIGHT = 20                 # What most info requests weigh.
 LIGHT_WEIGHT = 2            # What allMids, l2Book, and clearinghouseState weigh.
 ROLE_WEIGHT = 60            # What userRole weighs.
@@ -305,3 +306,14 @@ def parse_account(address, state):
             margin_used=number(p.get("marginUsed")),
         ))
     return account, positions
+
+
+def parse_portfolio(address, answer, window="perpAllTime"):
+    """
+    The PnlPoints of one portfolio() answer: the account's PnL since it began, and its value, at each point of a window,
+    perpAllTime by default, its perps alone over its whole life, a point about every two weeks. Times become seconds since
+    1970, as pnl_history keeps them.
+    """
+    history = dict(answer)[window]
+    values = {t: float(v) for t, v in history["accountValueHistory"]}
+    return [PnlPoint("hyperliquid", address, t // 1000, float(pnl), values.get(t)) for t, pnl in history["pnlHistory"]]

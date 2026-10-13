@@ -3,7 +3,7 @@
 # Ruff lints and sorts imports only. The code is formatted by hand, as in SportsArb and CryptoUpOrDownTrader, so `ruff format` is not used.
 [tool.ruff]
 line-length = 150
-target-version = "py314"
+target-version = "py312"     # Ubuntu 24.04's Python, which the AWS instance runs.
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "UP", "B", "SIM", "RUF"]

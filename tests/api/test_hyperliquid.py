@@ -144,3 +144,11 @@ def test_a_positions_answer_gives_the_account_and_each_position_at_its_time():
     btc, eth = positions
     assert (btc.coin, btc.size, btc.leverage, btc.leverage_type, btc.liquidation_price) == ("BTC", 6.08739, 3.0, "cross", None)
     assert (eth.size, eth.leverage_type, eth.liquidation_price, eth.time) == (-120.5, "isolated", 2711.4, 1791826690000)
+
+
+def test_a_portfolio_gives_the_perps_pnl_and_value_at_each_point_in_seconds():
+    window = {"accountValueHistory": [[1714607640308, "0.0"], [1715811240113, "5000.5"]],
+              "pnlHistory": [[1714607640308, "0.0"], [1715811240113, "-120.25"]], "vlm": "3974066.1"}
+    answer = [["allTime", {"accountValueHistory": [], "pnlHistory": [], "vlm": "0"}], ["perpAllTime", window]]
+    found = hyperliquid.parse_portfolio("0xa", answer)
+    assert [(p.time, p.pnl, p.account_value) for p in found] == [(1714607640, 0.0, 0.0), (1715811240, -120.25, 5000.5)]

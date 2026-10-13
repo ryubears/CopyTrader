@@ -1,4 +1,6 @@
 # Third-party packages needed to run the code. Install with: pip3 install --break-system-packages -r requirements.txt
 httpx
+numpy
+scipy
 pytest
 ruff
