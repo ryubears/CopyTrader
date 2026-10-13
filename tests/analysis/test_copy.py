@@ -43,23 +43,22 @@ def test_sharpe_ranks_steady_gains_above_bigger_but_wilder_ones():
     assert copy.ranked({"0xs": steady, "0xw": wild, "0xout": steady}, {"0xs", "0xw"}, 84 * DAY) == ["0xs", "0xw"]
 
 
-def test_a_trader_is_copyable_if_slow_enough_and_lately_in_sports_or_politics():
-    trader = copy.Trader("0xa", 20.0, [50 * DAY], 100.0)
+def test_a_trader_is_copyable_if_slow_enough_and_lately_trading_in_matched_markets():
+    trader = copy.Trader("0xa", 20.0, 100.0, [act(50 * DAY)])
     assert copy.copyable(trader, 84 * DAY) and not copy.copyable(trader, 200 * DAY)
-    assert not copy.copyable(copy.Trader("0xa", 150.0, [50 * DAY], 100.0), 84 * DAY)
+    assert not copy.copyable(copy.Trader("0xa", 150.0, 100.0, [act(50 * DAY)]), 84 * DAY)
     assert not copy.copyable(None, 84 * DAY)
 
 
 def test_a_traders_summary_keeps_their_pace_their_median_buy_and_their_rows_in_matched_markets():
     rows = [act(10), act(20, price=0.25), act(DAY + 5, "SELL", 50), act(30, condition_id="0xother")]
-    trader = copy.summary("0xa", rows, {"0xm": market()}, {"0xm": None})
-    assert (trader.pace, trader.median_buy, len(trader.rows)) == (2.0, 100.0, 3)        # Buys of $100, $50, and $100.
-    assert trader.category_times == [10, 20, DAY + 5]                                   # 0xother's market is not stored.
+    trader = copy.summary("0xa", rows, {"0xm": None})
+    assert (trader.pace, trader.median_buy, len(trader.rows)) == (2.0, 100.0, 3)        # Buys of $100, $50, and $100; 0xother is not matched.
 
 
 def test_signals_copy_buys_only_while_copied_and_sales_as_a_share_of_the_holding():
     rows = [act(10), act(20), act(30, "SELL", 100), act(40, kind="MERGE", size=150), act(50, "SELL", 10, outcome=1)]
-    trader = copy.Trader("0xa", 1.0, [], 100.0, rows)
+    trader = copy.Trader("0xa", 1.0, 100.0, rows)
     found = copy.signals({"0xa": trader}, {"0xa": [(0, 15)]}, {"0xm": market()})
     # The buy at 20 is past the copied period; the sale sells 100 of 400; the merge 150 of the 300 left; nothing of outcome 1 is held.
     assert [(t, r.side, r.outcome_index, fraction) for t, _, r, fraction in found] == [(10, "BUY", 0, None), (30, "SELL", 0, 0.25),
@@ -76,14 +75,16 @@ def test_the_fee_is_rounded_half_to_even_to_the_cent_and_prices_go_stale():
     assert copy.bid((0.4, 0.65), "long") == pytest.approx(0.35) and copy.bid((0.4, 0.65), "short") == pytest.approx(0.6)
 
 
-def simulate(rows, prices, delay=60, capital=10_000, closed_time="1970-01-01T00:33:20Z"):
+def simulate(rows, prices, delay=60, capital=10_000, closed_time="1970-01-01T00:33:20Z", chase=copy.CHASE, hold=False, floor=None,
+             paid='["1", "0"]'):
     """
     The copy of trader 0xa's rows in market 0xm, matched long for its first outcome, copied from 0 to 10,000 seconds.
     """
-    trader = copy.Trader("0xa", 1.0, [], 100.0, rows)
+    trader = copy.Trader("0xa", 1.0, 100.0, rows)
     us = UsMarket("us", "1", "e", 1, "sports", "moneyline", None, "?", None, '["A","B"]', "A", None, True, None, None, None, 0.0695, 0.0)
     return copy.simulate([(0.0, 10_000.0, ["0xa"])], {"0xa": trader}, {"0xm": Match("0xm", "us", ("long", "short"), "slug")},
-                         {"0xm": market(closed_time)}, {"us": us}, {"us": copy.prices_of(prices)}, capital, delay)
+                         {"0xm": market(closed_time, paid)}, {"us": us}, {"us": copy.prices_of(prices)}, capital, delay, chase=chase, hold=hold,
+                         floor=floor)
 
 
 def test_a_copy_buys_late_at_the_ask_sells_the_same_share_at_the_bid_and_is_paid_at_resolution():
@@ -119,14 +120,52 @@ def test_an_order_walks_the_book_and_pays_its_average_beyond_the_best_price():
     assert copy.premium(levels, 91) is None
 
 
-def test_the_depth_model_takes_the_median_book_of_each_type_and_cuts_what_most_cannot_fill(monkeypatch):
+def test_the_depth_model_takes_the_median_book_of_each_league_and_type_and_cuts_what_most_cannot_fill(monkeypatch):
     monkeypatch.setattr(copy, "SIZES", (10, 100))
+    monkeypatch.setattr(copy, "MIN_SIDES", 2)
     us = {s: UsMarket(s, "1", "e", 1, "sports", kind, None, "?", None, "[]", None, None, False, None, None, None, None, 0.0)
-          for s, kind in (("a", "moneyline"), ("b", "moneyline"), ("t", "totals"))}
+          for s, kind in (("aec-nfl-a", "moneyline"), ("aec-atp-b", "moneyline"), ("tsc-nfl-t", "totals"))}
     deep, thin = [(0.5, 1000)], [(0.5, 30), (0.6, 1000)]
-    books = {("a", 1): {"offer": deep, "bid": []}, ("b", 1): {"offer": thin, "bid": [(0.4, 1000)]}, ("t", 1): {"offer": [(0.5, 40)], "bid": []}}
+    books = {("aec-nfl-a", 1): {"offer": deep, "bid": [(0.5, 1000)]}, ("aec-atp-b", 1): {"offer": thin, "bid": []},
+             ("tsc-nfl-t", 1): {"offer": [(0.5, 40)], "bid": []}}
     model = copy.depth(books, us)
-    # Moneylines: three sides, deep, thin, and the deep bid, as buying 0.60 of the short side. The median pays nothing.
-    assert model["moneyline"] == {10: 0, 100: 0} and model["totals"] == {10: 0, 100: None}
-    assert copy.fillable(model, "moneyline") == 100 and copy.fillable(model, "totals") == 10 and copy.fillable(model, "spreads") == np.inf
-    assert copy.slippage({"x": {10: 0.0, 100: 0.02}}, "x", 55) == pytest.approx(0.01) and copy.slippage(model, "spreads", 1e6) == 0
+    # Moneylines: NFL's two deep sides, and tennis's one thin one, too few to price tennis apart.
+    assert model[("nfl", "moneyline")] == {10: 0, 100: 0} and ("atp", "moneyline") not in model
+    assert model[(None, "moneyline")] == {10: 0, 100: 0} and model[(None, "totals")] == {10: 0, 100: None}
+    assert copy.kind_of(model, us["aec-nfl-a"]) == ("nfl", "moneyline") and copy.kind_of(model, us["aec-atp-b"]) == (None, "moneyline")
+    totals = copy.kind_of(model, us["tsc-nfl-t"])
+    assert copy.fillable(model, totals) == 10 and copy.fillable(model, (None, "spreads")) == np.inf
+    assert copy.slippage({"x": {10: 0.0, 100: 0.02}}, "x", 55) == pytest.approx(0.01) and copy.slippage(model, (None, "spreads"), 1e6) == 0
+
+
+def test_an_empty_settled_or_crossed_book_is_no_price_and_the_next_usable_one_is_taken():
+    assert copy.usable(0.4, 0.65) and not copy.usable(1.0, 0.0) and not copy.usable(0.0, 1.0) and not copy.usable(0.35, 0.01)
+    prices = copy.prices_of([UsPrice("s", 100, 1.0, 0.0), UsPrice("s", 160, 0.4, 0.65)])
+    assert copy.price_after(prices, 90) == (0.4, 0.65) and copy.price_after(prices, 90, stale=60) is None
+
+
+def test_a_copy_does_not_chase_a_price_far_above_the_traders_nor_sell_far_below_it():
+    out = simulate([act(100, price=0.40)], [UsPrice("us", 160, 0.52, 0.5)])
+    assert (out["buys priced too far above the trader"], out["copied buys"]) == (1, 0)
+    assert simulate([act(100, price=0.40)], [UsPrice("us", 160, 0.52, 0.5)], chase=None)["copied buys"] == 1
+    held = simulate([act(100), act(500, "SELL", 100, 0.9)], [UsPrice("us", 160, 0.52, 0.5), UsPrice("us", 560, 0.62, 0.4)])
+    assert held["sales held, the bid too far below the trader"] == 1 and held["copied sales"] == 0
+
+
+def test_a_copy_that_holds_sells_nothing_and_its_pnl_falls_in_the_period_it_was_made():
+    rows, prices = [act(100), act(500, "SELL", 100, 0.6)], [UsPrice("us", 160, 0.52, 0.5), UsPrice("us", 560, 0.62, 0.4)]
+    held = simulate(rows, prices, hold=True)
+    contracts = 200 / (0.52 * (1 + 0.0695 * 0.48))
+    assert held["copied sales"] == 0 and held["pnl"] == pytest.approx(contracts - (contracts * 0.52 + 6.46))
+    assert held["pnl 0"] == held["pnl"] and copy.period_of([(0, 10, []), (10, 20, [])], 25) == 1
+
+
+def test_a_trader_loses_no_more_than_their_sleeve_and_a_floor_skips_buys_far_below_them():
+    buys = [act(100 + 10 * i, size=4000) for i in range(30)]          # Each far above the median, so $20 of a $500 sleeve.
+    out = simulate(buys, [UsPrice("us", 100 + 10 * i + 60, 0.5, 0.5) for i in range(30)], capital=500,
+                   closed_time="1970-01-01T00:16:40Z", paid='["0", "1"]')
+    # The first 25 buys spend the sleeve, the rest find it empty, and the market resolving against them loses it all.
+    assert out["spent"] + out["fees"] == pytest.approx(500, abs=1) and out["pnl"] == pytest.approx(-500, abs=1)
+    assert out["buys without the cash"] >= 1 and out["sleeves used"] == 1
+    cheap = simulate([act(100, price=0.60)], [UsPrice("us", 160, 0.52, 0.5)], floor=0.05)
+    assert cheap["buys priced too far below the trader"] == 1 and cheap["copied buys"] == 0

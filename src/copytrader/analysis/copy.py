@@ -6,25 +6,31 @@ Who is copied. Time is cut into PERIOD_DAYS periods back from the latest PnL poi
 each period's start the traders of the pool are ranked by the Sharpe ratio of their daily PnL over the LOOKBACK_DAYS
 before it, see sharpe(), which picked traders who made money in the next period far more often than ranking them by
 their PnL did. Of the top CANDIDATES, those too fast to copy, see traders.BOT_TRADES_PER_DAY, and those without a trade in
-a sports or politics market over the lookback are dropped, and the top COPIED of the rest are copied through the period.
-The pool is the traders on a volume board on the latest day, chosen for how much they trade rather than how they did.
---pool followed copies the followed traders instead, chosen for doing well over the very periods simulated, to show how
-much that flatters.
+a market that matches one of Polymarket US's over the lookback are dropped, and the top COPIED of the rest are copied
+through the period. The pool is the traders on a volume board on the latest day, chosen for how much they trade rather
+than how they did. --pool followed copies the followed traders instead, chosen for doing well over the very periods
+simulated, to show how much that flatters.
 
-What a copy does. Each trader copied gets an equal share of the capital, their sleeve. When they buy an outcome of a
-polymarket.com market that matches a Polymarket US market, see analysis/match.py, the copy buys the side of that market
-holding the outcome a wait later, at Polymarket US's price then: the side's best ask, from its price history, see
-history/polymarket_us.py. It spends BUY_SHARE of the sleeve, more as the trade is bigger than the trader's median buy, up
-to SIZE_RANGE times, and less as it is smaller, but no more than the cash left. When the trader sells, the copy sells as
-large a share of its holding as they sold of theirs, at the side's best bid then. What it holds when a market resolves
-pays a dollar a contract if its outcome won. Each order pays Polymarket US's taker fee, the market's fee coefficient
-times the contracts times p(1 - p), rounded to the cent.
+What a copy does. Each trader copied gets an equal share of the capital, their sleeve, in each period they are copied,
+an account of its own: what its buys cost comes out of it and what they pay goes back, so a trader who loses loses their
+sleeve and no more, and the others' are untouched. When they buy an outcome of a polymarket.com market that matches a
+Polymarket US market, see analysis/match.py, the copy buys the side of that market holding the outcome a wait later, at
+Polymarket US's price then, the side's best ask, from its price history, see history/polymarket_us.py, unless that is
+more than CHASE above what the trader paid, or, with --floor, more than that below it. Polymarket US's minute prices
+are often well below polymarket.com's during a game, too often to trust them as fills, which --floor leaves out. The copy
+spends BUY_SHARE of the sleeve, more as the trade is bigger than the trader's median buy, up to SIZE_RANGE times, and
+less as it is smaller, but no more than is left in the sleeve. When the trader sells, the copy sells as large a share of
+its holding as they sold of theirs, at the side's best bid then, unless that is more than CHASE below what the trader
+got, when it holds on, or, with --hold, it sells nothing. What it holds when a market resolves pays a dollar a contract
+if its outcome won. Each order pays Polymarket US's taker fee, the market's fee coefficient times the contracts times
+p(1 - p), rounded to the cent.
 
-A copy is skipped when Polymarket US has no price within STALE seconds after the wait, or nothing to buy, or the cash
-has run out. Polymarket US keeps no history of its books' depth, so it is taken from snapshots of its books, see
+A copy is skipped when Polymarket US has no usable() price within STALE seconds after the wait, or the sleeve is empty.
+Polymarket US keeps no history of its books' depth, so it is taken from snapshots of its books, see
 history/polymarket_us.py --books, see depth(): an order pays, a contract beyond the best price, the median of what an
-order of its size would have paid walking those books, for the market's type, and an order bigger than the median book
-fills is cut to what it fills. Without snapshots, every order fills at the best price.
+order of its size would have paid walking those books, for the market's league and type, or its type where the league's
+snapshots are few, and an order bigger than the median book fills is cut to what it fills. Without snapshots, every
+order fills at the best price.
 
 Beside each copy runs its ideal: the same dollars at the trader's own prices and times, without fees, the most a copy
 could make. What the copy makes less than its ideal is what the wait, Polymarket US's prices, and the fees cost. What
@@ -32,6 +38,8 @@ is still held at the end counts at its cost, for both.
 
 Run from src/ with:
     python3 -m copytrader.analysis.copy
+    python3 -m copytrader.analysis.copy --floor 0.03
+    python3 -m copytrader.analysis.copy --floor 0.03 --hold
     python3 -m copytrader.analysis.copy --pool followed
 """
 
@@ -61,6 +69,8 @@ SIZE_RANGE = 2                  # How many times bigger or smaller than that a b
 STALE = 300                     # Seconds after the wait within which Polymarket US's price must have been seen.
 MIN_CONTRACTS = 1               # Polymarket US's smallest order.
 SIZES = (10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000)     # Dollars an order spends, for the depth model.
+MIN_SIDES = 20                  # Sides of book snapshots a league's market type needs to be priced on its own, not by its type's.
+CHASE = 0.05                    # The most a copy pays a contract above the trader's price, or sells below it, in dollars.
 
 
 # WHO IS COPIED
@@ -68,27 +78,24 @@ SIZES = (10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000)     # Dollars a
 @dataclass
 class Trader:
     """
-    What the copy needs of a trader's activity: how fast they trade, when they traded in sports and politics, the size
-    of their median buy, and their rows in matched markets, oldest first.
+    What the copy needs of a trader's activity: how fast they trade, the size of their median buy, and their rows in
+    matched markets, oldest first.
     """
     address: str
     pace: float                 # Trades a day on the days they traded.
-    category_times: list        # Times of their trades in sports and politics markets, oldest first.
     median_buy: float           # Dollars.
     rows: list = field(default_factory=list)
 
 
-def summary(address, rows, markets, matches):
+def summary(address, rows, matches):
     """
-    A Trader from a trader's activity, oldest first, the stored markets, {condition_id: Market}, and the matches,
-    {condition_id: Match}.
+    A Trader from a trader's activity, oldest first, and the matches, {condition_id: Match}.
     """
     trades = [r for r in rows if r.type == "TRADE"]
     days = len({r.timestamp // DAY for r in trades})
     return Trader(
         address=address,
         pace=len(trades) / days if days else 0.0,
-        category_times=[r.timestamp for r in trades if (m := markets.get(r.condition_id)) and m.category in traders.CATEGORIES],
         median_buy=statistics.median([r.usdc_size for r in trades if r.side == "BUY"] or [1.0]),
         rows=[r for r in rows if r.condition_id in matches],
     )
@@ -126,11 +133,11 @@ def ranked(histories, pool, start, top=CANDIDATES):
 
 def copyable(trader, start, days=LOOKBACK_DAYS):
     """
-    Whether a Trader can be copied from start: slower than traders.BOT_TRADES_PER_DAY, and with a trade in a sports or
-    politics market over the days before.
+    Whether a Trader can be copied from start: slower than traders.BOT_TRADES_PER_DAY, and with a trade in a matched
+    market over the days before.
     """
     return (trader is not None and trader.pace < traders.BOT_TRADES_PER_DAY
-            and any(start - days * DAY <= t < start for t in trader.category_times))
+            and any(r.type == "TRADE" and start - days * DAY <= r.timestamp < start for r in trader.rows))
 
 
 def plan(histories, pool, cuts, summaries, copied=COPIED):
@@ -154,15 +161,25 @@ def prices_of(points):
     return np.array([p.time for p in points], dtype=float), [p.long_price for p in points], [p.short_price for p in points]
 
 
+def usable(long, short):
+    """
+    Whether a market's long and short prices are a book's: each between 0 and 1, and not crossed. An empty or settled
+    book shows 1 and 0, and now and then a point is crossed, its bid above its ask.
+    """
+    return long is not None and short is not None and 0 < long < 1 and 0 < short < 1 and long + short >= 1 - 1e-9
+
+
 def price_after(prices, at, stale=STALE):
     """
-    The long and short prices first seen at or after at, in seconds since 1970, if seen within stale seconds, else None.
+    The first usable() long and short prices seen at or after at, in seconds since 1970, within stale seconds, else None.
     """
     times, longs, shorts = prices
     i = int(np.searchsorted(times, at))
-    if i == len(times) or times[i] - at > stale or longs[i] is None or shorts[i] is None:
-        return None
-    return longs[i], shorts[i]
+    while i < len(times) and times[i] - at <= stale:
+        if usable(longs[i], shorts[i]):
+            return longs[i], shorts[i]
+        i += 1
+    return None
 
 
 def ask(quote, side):
@@ -202,31 +219,53 @@ def premium(levels, dollars):
     return None
 
 
+def league(slug):
+    """
+    The league of a Polymarket US market, from its slug after its prefix: 'nfl' of 'aec-nfl-car-gb-2025-11-02'.
+    """
+    parts = slug.split("-")
+    return parts[1] if len(parts) > 1 else None
+
+
+def kind_of(model, us):
+    """
+    The key of the depth() model a Polymarket US market is priced by: its league and type, if the model has them, else
+    its type alone, or None when the market is not known.
+    """
+    if us is None:
+        return None
+    return (league(us.slug), us.market_type) if (league(us.slug), us.market_type) in model else (None, us.market_type)
+
+
 def depth(books, us_markets):
     """
-    For each market type, what an order spending each of SIZES pays a contract beyond the best price: the median over
-    both sides of every snapshot of its books, from database.us_books(), as {market_type: {dollars: premium}}, None where
-    most could not fill it.
+    For each league and market type with MIN_SIDES sides of snapshots or more, and for each market type, what an order
+    spending each of SIZES pays a contract beyond the best price: the median over both sides of every snapshot of their
+    books, from database.us_books(), as {(league, market_type): {dollars: premium}}, the league None for a type's, the
+    premium None where most could not fill it.
     """
     found = defaultdict(lambda: defaultdict(list))
     for (slug, _), book in books.items():
         kind = us_markets[slug].market_type if slug in us_markets else None
         for levels in (book["offer"], [(1 - price, contracts) for price, contracts in book["bid"]]):
             for size in SIZES if levels else ():
-                found[kind][size].append(premium(levels, size))
+                for key in ((league(slug), kind), (None, kind)):
+                    found[key][size].append(premium(levels, size))
     model = {}
-    for kind, by_size in found.items():
-        model[kind] = {}
+    for key, by_size in found.items():
+        if key[0] is not None and len(by_size[SIZES[0]]) < MIN_SIDES:
+            continue
+        model[key] = {}
         for size, premiums in by_size.items():
             ordered = sorted(premiums, key=lambda p: np.inf if p is None else p)
-            model[kind][size] = ordered[len(ordered) // 2]
+            model[key][size] = ordered[len(ordered) // 2]
     return model
 
 
 def fillable(model, kind):
     """
-    The most dollars an order in a market of a kind spends, by the depth() model: the largest of SIZES the median book
-    filled, none if it filled none, or no limit without snapshots of the kind.
+    The most dollars an order in a market of a kind, see kind_of(), spends by the depth() model: the largest of SIZES the
+    median book filled, none if it filled none, or no limit without snapshots of the kind.
     """
     sizes = [size for size, p in (model.get(kind) or {}).items() if p is not None]
     return max(sizes, default=0.0) if model.get(kind) else np.inf
@@ -235,7 +274,7 @@ def fillable(model, kind):
 def slippage(model, kind, dollars):
     """
     What an order spending dollars, no more than fillable(), pays a contract beyond the best price in a market of a kind,
-    by the depth() model, between its sizes by straight lines, or nothing without snapshots of the kind.
+    see kind_of(), by the depth() model, between its sizes by straight lines, or nothing without snapshots of the kind.
     """
     by_size = {size: p for size, p in (model.get(kind) or {}).items() if p is not None}
     if not by_size:
@@ -307,17 +346,28 @@ def sleeves(plan_found, capital):
     return found
 
 
-def simulate(plan_found, summaries, matches, markets, us_markets, prices, capital, delay, model=None):
+def period_of(plan_found, at):
+    """
+    Which period of plan_found a time falls in, counting from 0, or the last for a time after them all.
+    """
+    return next((i for i, (start, stop, _) in enumerate(plan_found) if start <= at < stop), len(plan_found) - 1)
+
+
+def simulate(plan_found, summaries, matches, markets, us_markets, prices, capital, delay, model=None, chase=CHASE, hold=False,
+             floor=None):
     """
     Copy the traders of plan_found, from their summaries, {address: Trader}, with capital dollars, each trade delay
     seconds late, beside its ideal, see the top of this file. matches is {condition_id: Match}, markets {condition_id:
-    Market}, us_markets {slug: UsMarket}, prices {slug: prices_of()}, and model the books' depth(), none by default.
-    Returns a Counter of what happened, in counts and dollars.
+    Market}, us_markets {slug: UsMarket}, prices {slug: prices_of()}, model the books' depth(), none by default, and chase
+    the most a copy pays above the trader's price, or sells below it, without limit when None, and floor the most it buys
+    below the trader's price, without limit when None. With hold, the copy holds what it buys to resolution, selling
+    nothing. Returns a Counter of what happened, in counts and dollars, with the PnL of what was bought in each period as
+    "pnl 0", "pnl 1", and so on.
     """
     model = model or {}
     shares = sleeves(plan_found, capital)
     chosen = {a: [(start, stop) for start, stop, _ in s] for a, s in shares.items()}
-    found = signals(summaries, chosen, markets)
+    found = [f for f in signals(summaries, chosen, markets) if not hold or f[3] is None]
     queue = [(t + delay, 1, i, address, r, fraction) for i, (t, address, r, fraction) in enumerate(found)]
     closes = {}
     for condition_id in {r.condition_id for _, _, r, _ in found}:
@@ -327,33 +377,38 @@ def simulate(plan_found, summaries, matches, markets, us_markets, prices, capita
             queue.append((at, 0, -1, None, condition_id, None))     # A resolution comes before a trade of the same second.
     heapq.heapify(queue)
     out, sizes, above = Counter(), [], []
-    cash = capital
-    held = defaultdict(lambda: [0.0, 0.0])          # The copy's contracts and their cost, by (address, condition_id, outcome).
+    cash = {}                                       # What is left in each sleeve, by (address, period).
+    held = defaultdict(lambda: [0.0, 0.0])          # The copy's contracts and their cost, by (address, period, condition_id, outcome).
     ideal = defaultdict(lambda: [0.0, 0.0])         # The ideal's.
     while queue:
         at, kind, _, address, item, fraction = heapq.heappop(queue)
         if kind == 0:                               # A market resolved, and what is held of it pays out.
             m = markets[item]
             for book in (held, ideal):
-                for key in [k for k in book if k[1] == item]:
+                for key in [k for k in book if k[2] == item]:
                     contracts, cost = book.pop(key)
-                    paid = contracts * payout(m, key[2])
+                    paid = contracts * payout(m, key[3])
                     out["pnl" if book is held else "ideal pnl"] += paid - cost
-                    cash += paid if book is held else 0.0
+                    if book is held:
+                        cash[key[:2]] += paid
+                        out[f"pnl {key[1]}"] += paid - cost
             continue
-        r, key = item, (address, item.condition_id, item.outcome_index)
+        r = item
         found_match = matches[r.condition_id]
         side = found_match.sides[r.outcome_index] if r.outcome_index is not None and r.outcome_index < len(found_match.sides) else None
         quote = price_after(prices[found_match.slug], at) if found_match.slug in prices and side else None
         us = us_markets.get(found_match.slug)
-        coefficient, kind = (us.fee_coefficient, us.market_type) if us else (None, None)
+        coefficient, kind = (us.fee_coefficient if us else None), kind_of(model, us)
         if fraction is None:                        # A buy.
             out["buys"] += 1
             if at >= closes.get(r.condition_id, float("inf")):
                 out["buys after the market closed"] += 1
                 continue
+            period = period_of(plan_found, r.timestamp)
             sleeve = next(s for start, stop, s in shares[address] if start <= r.timestamp < stop)
-            want = min(cash, sleeve * BUY_SHARE * min(SIZE_RANGE, max(1 / SIZE_RANGE, r.usdc_size / summaries[address].median_buy)))
+            account, key = (address, period), (address, period, r.condition_id, r.outcome_index)
+            cash.setdefault(account, sleeve)
+            want = min(cash[account], sleeve * BUY_SHARE * min(SIZE_RANGE, max(1 / SIZE_RANGE, r.usdc_size / summaries[address].median_buy)))
             if want > fillable(model, kind):
                 want = fillable(model, kind)
                 out["buys cut to the book's depth"] += 1
@@ -361,45 +416,59 @@ def simulate(plan_found, summaries, matches, markets, us_markets, prices, capita
             if price is None or not 0 < price < 1:
                 out["buys without a price" if quote is None else "buys with nothing to buy"] += 1
                 continue
+            if chase is not None and price > r.price + chase:
+                out["buys priced too far above the trader"] += 1
+                continue
+            if floor is not None and price < r.price - floor:
+                out["buys priced too far below the trader"] += 1
+                continue
             contracts = want / (price * (1 + (coefficient or polymarket_us.TAKER_FEE) * (1 - price)))
             if contracts < MIN_CONTRACTS:
-                out["buys without the cash" if want == cash else "buys too small"] += 1
+                out["buys without the cash" if want == cash[account] else "buys too small"] += 1
                 continue
             paid = fee(coefficient, contracts, price)
-            cash -= contracts * price + paid
+            cash[account] -= contracts * price + paid
             held[key][0] += contracts
             held[key][1] += contracts * price + paid
-            ideal[key][0] += contracts * price / r.price
-            ideal[key][1] += contracts * price
+            if r.price > 0:
+                ideal[key][0] += contracts * price / r.price
+                ideal[key][1] += contracts * price
             out["copied buys"] += 1
             out["spent"] += contracts * price
             out["fees"] += paid
             sizes.append(contracts * price)
             above.append(price - r.price)
             continue
-        for book in (held, ideal):                  # A sale, of the same share of the holding.
-            if key not in book:
-                continue
-            if book is ideal:
-                price, paid = r.price, 0.0
-            elif quote is None or not 0 < bid(quote, side) < 1:
-                out["sales without a price"] += 1
-                continue
-            else:
-                price = bid(quote, side)
-                price = max(0.001, price - slippage(model, kind, min(book[key][0] * fraction * price, fillable(model, kind))))
-                paid = fee(coefficient, book[key][0] * fraction, price)
-                out["copied sales"] += 1
-                out["fees"] += paid
-            contracts, cost = book[key][0] * fraction, book[key][1] * fraction
-            out["pnl" if book is held else "ideal pnl"] += contracts * price - paid - cost
-            cash += contracts * price - paid if book is held else 0.0
-            book[key][0] -= contracts
-            book[key][1] -= cost
+        for key in [(address, period, r.condition_id, r.outcome_index) for period in range(len(plan_found))]:
+            for book in (held, ideal):              # A sale, of the same share of what each sleeve holds.
+                if key not in book:
+                    continue
+                if book is ideal:
+                    price, paid = r.price, 0.0
+                elif quote is None or not 0 < bid(quote, side) < 1:
+                    out["sales without a price"] += 1
+                    continue
+                else:
+                    price = bid(quote, side)
+                    price = max(0.001, price - slippage(model, kind, min(book[key][0] * fraction * price, fillable(model, kind))))
+                    if chase is not None and price < r.price - chase:
+                        out["sales held, the bid too far below the trader"] += 1
+                        continue
+                    paid = fee(coefficient, book[key][0] * fraction, price)
+                    out["copied sales"] += 1
+                    out["fees"] += paid
+                contracts, cost = book[key][0] * fraction, book[key][1] * fraction
+                out["pnl" if book is held else "ideal pnl"] += contracts * price - paid - cost
+                if book is held:
+                    cash[key[:2]] += contracts * price - paid
+                    out[f"pnl {key[1]}"] += contracts * price - paid - cost
+                book[key][0] -= contracts
+                book[key][1] -= cost
     out["still held, at cost"] = sum(cost for _, cost in held.values())
     out["median order"] = statistics.median(sizes) if sizes else 0.0
     out["largest order"] = max(sizes, default=0.0)
     out["median price above"] = statistics.median(above) if above else 0.0     # Than the trader paid, a contract.
+    out["sleeves used"] = len(cash)
     return out
 
 
@@ -434,7 +503,7 @@ def planned(conn, name, matches, markets, copied=COPIED):
     cuts = persistence.bounds(histories, PERIOD_DAYS, PERIODS)
     wanted = {a for start in cuts[:-1] for a in ranked(histories, pool, start)}
     read = database.synced_since(conn, "polymarket", "activity", 0)
-    summaries = {a: summary(a, database.activity_of(conn, a), markets, matches) for a in wanted if a in read}
+    summaries = {a: summary(a, database.activity_of(conn, a), matches) for a in wanted if a in read}
     return plan(histories, pool, cuts, summaries, copied), summaries, len(wanted)
 
 
@@ -445,9 +514,9 @@ def day(seconds):
     return f"{datetime.fromtimestamp(seconds, UTC):%Y-%m-%d}"
 
 
-def report(capital, delay, out):
+def report(capital, delay, out, plan_found):
     """
-    Lines saying what became of a copy with capital dollars, delay seconds late.
+    Lines saying what became of a copy with capital dollars, delay seconds late, of the traders of plan_found.
     """
     skipped = ", ".join(f"{out[k]:,} {k[5:]}" for k in sorted(out) if k.startswith("buys ") and out[k])
     return [f"${capital:,} copied {delay}s late: {out['buys']:,} buys, {out['copied buys']:,} copied"
@@ -455,7 +524,9 @@ def report(capital, delay, out):
             f"    spent ${out['spent']:,.0f}, median order ${out['median order']:,.2f}, largest ${out['largest order']:,.0f}, "
             f"paying a median {out['median price above'] * 100:+.1f} cents a contract above the trader",
             f"    fees ${out['fees']:,.0f}, pnl ${out['pnl']:+,.0f} ({out['pnl'] / capital:+.1%}) against the ideal's "
-            f"${out['ideal pnl']:+,.0f}, ${out['still held, at cost']:,.0f} still held at cost"]
+            f"${out['ideal pnl']:+,.0f}, ${out['still held, at cost']:,.0f} still held at cost",
+            "    pnl of what was bought in each period: " + ", ".join(f"{out[f'pnl {i}']:+,.0f}" for i in range(len(plan_found)))
+            + f", from {out['sleeves used']:,} sleeves used of {sum(len(chosen) for _, _, chosen in plan_found):,}"]
 
 
 # MAIN
@@ -464,7 +535,11 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Simulate copying polymarket.com traders on Polymarket US.")
     ap.add_argument("--pool", choices=["volume", "followed"], default="volume", help="the traders ranked, volume by default")
     ap.add_argument("--copied", type=int, default=COPIED, help=f"traders copied each period, {COPIED} by default")
+    ap.add_argument("--chase", type=float, default=CHASE, help=f"the most paid above the trader's price, {CHASE} by default, -1 for no limit")
+    ap.add_argument("--hold", action="store_true", help="hold what is bought to resolution rather than copy the traders' sales")
+    ap.add_argument("--floor", type=float, default=-1, help="the most bought below the trader's price, no limit by default")
     args = ap.parse_args()
+    chase = None if args.chase < 0 else args.chase
     conn = database.connect()
     matches = match.matches(conn)
     markets = database.markets(conn)
@@ -476,10 +551,13 @@ if __name__ == "__main__":
           f"{wanted - len(summaries):,} without their activity read")
     for start, stop, chosen in found:
         print(f"    {day(start)} to {day(stop)}: {len(chosen)} copied")
-    print(f"depth from {len(books):,} book snapshots: cents a contract beyond the best price, by dollars an order spends")
-    for kind, by_size in sorted(model.items(), key=lambda item: str(item[0])):
-        cells = (f"{'$' + format(size, ','):>9} {'-' if p is None else format(p * 100, '.1f'):>4}" for size, p in by_size.items())
-        print(f"    {kind!s:<18}" + "".join(cells))
+    leagues = sum(key[0] is not None for key in model)
+    print(f"depth from {len(books):,} book snapshots, by type here and for {leagues} leagues apart: cents a contract beyond the best price, "
+          f"by dollars an order spends, and chasing at most {chase} a contract")
+    for (key_league, kind), by_size in sorted(model.items(), key=lambda item: str(item[0][1])):
+        if key_league is None:
+            cells = (f"{'$' + format(size, ','):>9} {'-' if p is None else format(p * 100, '.1f'):>4}" for size, p in by_size.items())
+            print(f"    {kind!s:<18}" + "".join(cells))
     copied = {a for _, _, chosen in found for a in chosen}
     slugs = {matches[r.condition_id].slug for a in copied for r in summaries[a].rows}
     prices = {slug: prices_of(database.us_prices(conn, slug)) for slug in slugs}
@@ -488,4 +566,6 @@ if __name__ == "__main__":
     for capital in CAPITALS:
         for delay in DELAYS:
             print()
-            print("\n".join(report(capital, delay, simulate(found, summaries, matches, markets, us_markets, prices, capital, delay, model))))
+            out = simulate(found, summaries, matches, markets, us_markets, prices, capital, delay, model, chase, args.hold,
+                           None if args.floor < 0 else args.floor)
+            print("\n".join(report(capital, delay, out, found)))

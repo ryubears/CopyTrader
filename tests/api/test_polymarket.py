@@ -155,3 +155,14 @@ def test_a_pnl_chart_gives_a_point_a_day():
     found = polymarket.parse_pnl("0xa", [{"t": 1788912000, "p": 683444}, {"t": 1788998400, "p": 996377.3}])
     assert [(p.venue, p.address, p.time, p.pnl, p.account_value) for p in found] == [("polymarket", "0xa", 1788912000, 683444.0, None),
                                                                                     ("polymarket", "0xa", 1788998400, 996377.3, None)]
+
+
+def test_many_books_come_in_one_call_and_each_keeps_its_best_levels_best_first(serve):
+    book = {"asset_id": "3298", "timestamp": "1791892337716", "bids": [{"price": "0.01", "size": "632"}, {"price": "0.48", "size": "80670.26"}],
+            "asks": [{"price": "0.99", "size": "737"}, {"price": "0.51", "size": "23331"}, {"price": "0.5", "size": "17099.53"}]}
+    sent = serve(lambda request: httpx.Response(200, json=[book]))
+    assert polymarket.books(["3298", "8720"]) == [book]
+    assert json.loads(sent[0].content) == [{"token_id": "3298"}, {"token_id": "8720"}] and sent[0].method == "POST"
+    row = polymarket.parse_book(book, 5.0, 2)
+    assert (row.venue, row.key, row.venue_time, row.bids, row.asks) == ("polymarket", "3298", 1791892337.716, "[[0.48,80670.26],[0.01,632.0]]",
+                                                                        "[[0.5,17099.53],[0.51,23331.0]]")

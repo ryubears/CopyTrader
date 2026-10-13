@@ -4,6 +4,7 @@ and turning markets and prices into models, with no network.
 """
 
 import httpx
+import pytest
 from copytrader.api import polymarket_us
 
 # A game's event and its moneyline as Polymarket US sends them, cut down from real answers.
@@ -48,3 +49,18 @@ def test_a_market_takes_its_events_game_and_names_the_outcome_its_long_side_hold
 def test_prices_become_one_row_a_point():
     rows = polymarket_us.parse_prices("s", [{"timestamp": 60, "longPrice": 0.4, "shortPrice": 0.65}, {"timestamp": 120}])
     assert [(r.time, r.long_price, r.short_price) for r in rows] == [(60, 0.4, 0.65), (120, None, None)]
+
+
+def test_a_games_id_is_its_game_id_or_the_number_of_its_sportradar_id():
+    assert polymarket_us.game_id({"gameId": 19533, "sportradarGameId": "0bddea0c-7e26"}) == 19533
+    assert polymarket_us.game_id({"sportradarGameId": "sr:sport_event:73835474"}) == 73835474
+    assert polymarket_us.game_id({"sportradarGameId": "0bddea0c-7e26"}) is None and polymarket_us.game_id({}) is None
+
+
+def test_a_book_keeps_its_best_levels_best_first_and_the_venues_time_to_the_microsecond():
+    book = {"transactTime": "2026-10-12T23:07:04.728998775Z", "offers": [{"px": {"value": "0.43"}, "qty": "11901.01"}],
+            "bids": [{"px": {"value": "0.4275"}, "qty": "8355.01"}, {"px": {"value": "0.425"}, "qty": "9957"}]}
+    row = polymarket_us.parse_lag_book("s", book, 5.0, 1)
+    assert (row.venue, row.key, row.time, row.bids, row.asks) == ("polymarket_us", "s", 5.0, "[[0.4275,8355.01]]", "[[0.43,11901.01]]")
+    assert row.venue_time == pytest.approx(1791846424.728998)
+    assert polymarket_us.parse_lag_book("s", {"transactTime": "2026-10-12T23:07:04Z"}, 5.0, 1).venue_time == 1791846424.0

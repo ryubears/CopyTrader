@@ -127,12 +127,35 @@ politics do not match yet.
 US. Each 28 day period it ranks the traders on a volume board by the
 Sharpe ratio of their daily PnL over the 84 days before, which picked
 traders who made money in the next period far more often than their
-PnL did, drops the bots, and copies the top 25: their buys in matched
-markets a minute to an hour late at Polymarket US's best ask, and their
-sales at its best bid, each order paying Polymarket US's taker fee,
-with $10,000 or $100,000. Beside each copy runs its ideal, the same
-dollars at the traders' own prices without fees, so what the copy makes
-less is what copying costs.
+PnL did, drops the bots and those who trade no matched market, and
+copies the top 25, each from a sleeve of the capital of its own: their
+buys in matched markets a minute to an hour late at Polymarket US's best
+ask, plus what the order's size would have paid walking a snapshot of
+Polymarket US's books, and their sales at its best bid, each order
+paying Polymarket US's taker fee, with $10,000 or $100,000. It does not
+chase a price more than 5 cents above the trader's, `--floor` skips one
+more than a few cents below, which Polymarket US's minute prices show
+too often to trust, and `--hold` holds to resolution instead of copying
+sales. Beside each copy runs its ideal, the same dollars at the traders'
+own prices without fees, so what the copy makes less is what copying
+costs.
+
+`record/lag.py` records polymarket.com's and Polymarket US's books side
+by side, live, for the moneylines, totals, and soccer results of the
+games under way or starting within the hour: polymarket.com's every two
+seconds, all in one call, and Polymarket US's one market at a time as
+fast as its limit lets, those of games under way twice as often. A book
+is stored when it changes, and at least once a minute. `analysis/lag.py`
+then times how long Polymarket US takes to follow a move of
+polymarket.com's, finds the stretches when buying on Polymarket US cost
+less, fee included, than polymarket.com's bid, with how long they
+lasted and how many dollars were there to buy, and checks the minute
+price history the copy simulation priced by against the books.
+
+A Polymarket US game's event carries the game id polymarket.com's does,
+or, in the smaller leagues, only Sportradar's id, whose number is
+polymarket.com's game id then. Tennis matches of Sportradar's alone do
+not match, as polymarket.com has them by other ids and slugs.
 
 ## Running it
 
@@ -166,6 +189,10 @@ copytrader.history.polymarket --copy-candidates` reads the activity of
 the traders it might copy, `python3 -m copytrader.history.polymarket_us`
 reads the games, Polymarket US's markets, and its prices, and then
 `python3 -m copytrader.analysis.copy` prints the simulation.
+
+The lag recorder runs apart from the recorder, `python3 -m
+copytrader.record.lag`, until stopped, and `python3 -m
+copytrader.analysis.lag` reports on what it has recorded so far.
 
 ## Deployment
 

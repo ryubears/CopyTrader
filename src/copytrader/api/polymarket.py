@@ -22,8 +22,8 @@ cursor.
 import itertools
 import json
 from collections import Counter
-from copytrader.api.http import RateLimiter, get_json
-from copytrader.db.models import Activity, Event, Market, PnlPoint, Standing
+from copytrader.api.http import RateLimiter, get_json, post_json
+from copytrader.db.models import Activity, Event, LagBook, Market, PnlPoint, Standing
 
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
@@ -123,6 +123,13 @@ def book(token_id):
     An outcome's order book now. Both sides come worst first, so the best bid and ask are each side's last level.
     """
     return get_json(f"{CLOB}/book", {"token_id": token_id}, CLOB_LIMITER)
+
+
+def books(token_ids):
+    """
+    The order books of many outcomes now, in one call, each as book() gives it, with its asset_id.
+    """
+    return post_json(f"{CLOB}/books", [{"token_id": t} for t in token_ids], CLOB_LIMITER)
 
 
 def midpoint(token_id):
@@ -332,3 +339,15 @@ def parse_pnl(address, points):
     The PnlPoints of one pnl_history() answer.
     """
     return [PnlPoint("polymarket", address, int(p["t"]), float(p["p"]), None) for p in points]
+
+
+def parse_book(book, time, levels):
+    """
+    A LagBook of the best levels of a book() or books(), read at time, in seconds since 1970, best first.
+    """
+    def best(side):
+        return [[float(level["price"]), float(level["size"])] for level in reversed(book.get(side) or [])][:levels]
+
+    stamp = book.get("timestamp")
+    return LagBook("polymarket", book["asset_id"], time, int(stamp) / 1000 if stamp else None,
+                   json.dumps(best("bids"), separators=(",", ":")), json.dumps(best("asks"), separators=(",", ":")))

@@ -10,16 +10,19 @@ A market is one instrument with two sides. Its long side holds the outcome its s
 outcomes but not always, and its short side the other, so buying the short side is buying the other outcome. Its price
 history gives, about once a minute, the long side's display price, normally the best ask, and the short side's, normally
 one less the best bid, so what buying either side cost at the time. A sports event that is a game carries the same
-gameId as polymarket.com's event for that game.
+gameId as polymarket.com's event for that game, or, in the smaller leagues, only Sportradar's id, 'sr:sport_event:73835474',
+whose number polymarket.com uses as its gameId then, see game_id().
 
 The events listing pages by offset and filters by the events' start times, so a long stretch is read a day at a time.
 Price history over a stretch of time, given by its start and end, is meant for stretches of up to PRICES_SPAN, as found
 on 2026-10-13.
 """
 
+import json
+import re
 from copytrader.api.http import RateLimiter, get_json
-from copytrader.common.timeutil import DAY
-from copytrader.db.models import UsBookLevel, UsMarket, UsPrice
+from copytrader.common.timeutil import DAY, epoch
+from copytrader.db.models import LagBook, UsBookLevel, UsMarket, UsPrice
 from datetime import UTC, datetime
 
 GATEWAY = "https://gateway.polymarket.us/v1"
@@ -82,6 +85,17 @@ def long_outcome(m):
     return None
 
 
+def game_id(event):
+    """
+    The game an event is, by the id polymarket.com's event for it carries: its gameId, or the number of its Sportradar
+    id when that is all it has. None if it is not a game.
+    """
+    if event.get("gameId"):
+        return event["gameId"]
+    found = re.fullmatch(r"sr:sport_event:(\d+)", event.get("sportradarGameId") or "")
+    return int(found.group(1)) if found else None
+
+
 def parse_market(event, m, updated_at):
     """
     A UsMarket from one market of an event of events().
@@ -90,7 +104,7 @@ def parse_market(event, m, updated_at):
         slug=m["slug"],
         market_id=str(m["id"]),
         event_slug=event["slug"],
-        game_id=event.get("gameId"),
+        game_id=game_id(event),
         category=m.get("category") or event.get("category"),
         market_type=m.get("marketType"),
         sports_market_type=m.get("sportsMarketType"),
@@ -121,3 +135,16 @@ def parse_book(slug, book, time, levels):
     """
     return [UsBookLevel(slug, int(time), side, i, float(entry["px"]["value"]), float(entry["qty"]))
             for side, key in (("bid", "bids"), ("offer", "offers")) for i, entry in enumerate((book.get(key) or [])[:levels])]
+
+
+def parse_lag_book(slug, book, time, levels):
+    """
+    A LagBook of the best levels of a market's book(), its long side's, read at time, in seconds since 1970, best first.
+    The venue's time is when it last changed the book, given to the nanosecond, cut to the microsecond.
+    """
+    def best(side):
+        return [[float(entry["px"]["value"]), float(entry["qty"])] for entry in (book.get(side) or [])[:levels]]
+
+    head, _, fraction = (book.get("transactTime") or "").rstrip("Z").partition(".")
+    return LagBook("polymarket_us", slug, time, epoch(f"{head}.{fraction[:6] or 0}Z") if head else None,
+                   json.dumps(best("bids"), separators=(",", ":")), json.dumps(best("offers"), separators=(",", ":")))

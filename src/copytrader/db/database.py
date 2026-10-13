@@ -19,6 +19,8 @@ One database file holds every table:
     us_prices     what buying either side of those cost, around the times a copy would have traded, by history/polymarket_us.py
     us_price_reads  the stretches of price history read
     us_books      snapshots of Polymarket US's order books, by history/polymarket_us.py
+    lag_pairs     the Polymarket US markets recorded live beside polymarket.com's, by record/lag.py
+    lag_books     both venues' best levels for those, as they change, by record/lag.py
 
 The tables themselves are in schema.sql, and the model of each one's rows in models.py. This file holds the reads and
 writes.
@@ -26,6 +28,7 @@ writes.
 
 import sqlite3
 from copytrader.common.paths import DATA_DIR
+from copytrader.common.timeutil import epoch
 from copytrader.db import models, schema
 from dataclasses import asdict, fields
 from pathlib import Path
@@ -50,6 +53,8 @@ TABLES = {
     models.UsPrice: ("us_prices", "INSERT OR IGNORE"),
     models.UsPriceRead: ("us_price_reads", "INSERT OR REPLACE"),
     models.UsBookLevel: ("us_books", "INSERT OR IGNORE"),
+    models.LagPair: ("lag_pairs", "INSERT OR IGNORE"),
+    models.LagBook: ("lag_books", "INSERT OR IGNORE"),
 }
 
 
@@ -304,3 +309,28 @@ def us_books(conn):
     for slug, time, side, price, contracts in rows:
         found.setdefault((slug, time), {"bid": [], "offer": []})[side].append((price, contracts))
     return found
+
+
+# THE LAG
+
+def lag_pairs(conn):
+    """
+    Every pair recorded by record/lag.py, as {slug: LagPair}.
+    """
+    return {p.slug: p for p in read(conn, models.LagPair)}
+
+
+def lag_unfinished(conn, before):
+    """
+    The recorded pairs whose games started before before, in seconds since 1970, and are not noted finished, see
+    record/lag.py, oldest first.
+    """
+    done = synced_since(conn, "lag", "finished", 0)
+    return [p for p in read(conn, models.LagPair, "ORDER BY game_start") if p.slug not in done and (epoch(p.game_start) or 0) < before]
+
+
+def lag_books(conn, venue, key):
+    """
+    One venue's recorded books of one outcome, oldest first, as LagBook.
+    """
+    return read(conn, models.LagBook, "WHERE venue = ? AND key = ? ORDER BY time", (venue, key))

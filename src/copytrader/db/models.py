@@ -262,3 +262,33 @@ class UsBookLevel:
     level: int                  # 0 for the best.
     price: float
     contracts: float
+
+
+@dataclass
+class LagPair:
+    """
+    A Polymarket US market and the polymarket.com outcome its long side holds, recorded side by side by record/lag.py.
+    """
+    slug: str                   # Polymarket US's market.
+    token_id: str               # polymarket.com's outcome that Polymarket US's long side holds.
+    condition_id: str           # polymarket.com's market.
+    outcome: str                # The outcome's name, as polymarket.com writes it.
+    game_id: int
+    game_start: str | None      # ISO 8601 UTC.
+    market_type: str | None     # Polymarket US's: 'moneyline', 'totals', or 'drawable_outcome'.
+    fee_coefficient: float | None   # Polymarket US's taker fee's coefficient.
+    first_seen: float           # Seconds since 1970.
+
+
+@dataclass
+class LagBook:
+    """
+    The best levels of one venue's order book for an outcome at a moment, as record/lag.py read it: polymarket.com's for
+    the outcome's token, Polymarket US's for the market's long side.
+    """
+    venue: str                  # 'polymarket' or 'polymarket_us'.
+    key: str                    # The token id on polymarket.com, the market's slug on Polymarket US.
+    time: float                 # When it was read, seconds since 1970, by this machine's clock.
+    venue_time: float | None    # When the venue last changed it, by the venue's clock, if it says.
+    bids: str                   # JSON list of [price, contracts], best first.
+    asks: str                   # The same, of the asks.

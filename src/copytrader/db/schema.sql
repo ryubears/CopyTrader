@@ -235,3 +235,28 @@ CREATE TABLE IF NOT EXISTS us_books (
     contracts  REAL NOT NULL,
     PRIMARY KEY (slug, time, side, level)
 ) WITHOUT ROWID;
+
+-- Polymarket US's markets recorded live beside polymarket.com's, for how far and how long one lags the other, by
+-- record/lag.py.
+CREATE TABLE IF NOT EXISTS lag_pairs (
+    slug             TEXT PRIMARY KEY,      -- Polymarket US's market.
+    token_id         TEXT NOT NULL,         -- polymarket.com's outcome that Polymarket US's long side holds.
+    condition_id     TEXT NOT NULL,         -- polymarket.com's market.
+    outcome          TEXT NOT NULL,
+    game_id          INTEGER NOT NULL,
+    game_start       TEXT,                  -- ISO 8601 UTC.
+    market_type      TEXT,                  -- Polymarket US's: 'moneyline', 'totals', or 'drawable_outcome'.
+    fee_coefficient  REAL,                  -- Polymarket US's taker fee's coefficient.
+    first_seen       REAL NOT NULL          -- Seconds since 1970.
+);
+
+-- The best levels of both venues' books for each pair, stored when they change and at least once a minute.
+CREATE TABLE IF NOT EXISTS lag_books (
+    venue       TEXT NOT NULL,              -- 'polymarket' or 'polymarket_us'.
+    key         TEXT NOT NULL,              -- The token id on polymarket.com, the market's slug on Polymarket US.
+    time        REAL NOT NULL,              -- When it was read, seconds since 1970, by this machine's clock.
+    venue_time  REAL,                       -- When the venue last changed it, by the venue's clock, if it says.
+    bids        TEXT NOT NULL,              -- JSON list of [price, contracts], best first.
+    asks        TEXT NOT NULL,
+    PRIMARY KEY (venue, key, time)
+) WITHOUT ROWID;
