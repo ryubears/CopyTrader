@@ -1,6 +1,8 @@
 # Third-party packages needed to run the code. Install with: pip3 install --break-system-packages -r requirements.txt
+cryptography
 httpx
 numpy
 scipy
+websockets
 pytest
 ruff

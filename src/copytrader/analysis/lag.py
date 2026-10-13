@@ -11,6 +11,8 @@ The report gives, by market type and by whether the game was under way:
 
     lag        how long after polymarket.com's mid moves JUMP or more within JUMP_SECONDS Polymarket US's mid has moved
                half as far the same way, at most FOLLOW_SECONDS, and the same the other way round, to see which leads.
+               A mid counts only while its book's spread is MAX_SPREAD or less, as a wider one moves when a quote is
+               pulled for a moment, without the price moving.
     cheap      the stretches when buying a side on Polymarket US cost less, its taker fee included, than polymarket.com's
                best bid for it: as if Polymarket US's ask had not caught up with polymarket.com. For each, how long it
                lasted, how many cents it was cheaper by at most, how many dollars Polymarket US's asks held at prices that
@@ -19,10 +21,15 @@ The report gives, by market type and by whether the game was under way:
                AGREE with the best ask and bid recorded at the same moment, and how often it showed a price more than
                CHEAPER below the recorded ask, a fill a copy could not have had.
 
+Books recorded before Polymarket US's came from its market feed were up to 30 seconds old, see record/lag.py, so
+--since leaves them out.
+
 Run from src/ with:
     python3 -m copytrader.analysis.lag
+    python3 -m copytrader.analysis.lag --since 2026-10-13T17:00
 """
 
+import argparse
 import itertools
 import json
 import numpy as np
@@ -37,6 +44,7 @@ from datetime import UTC, datetime
 
 MAX_AGE = 75                    # Seconds a book read stays the venue's book, a little more than the recorder's heartbeat.
 JUMP = 0.03                     # A move of polymarket.com's mid, or Polymarket US's, worth following.
+MAX_SPREAD = 0.05               # The widest spread a book's mid counts at.
 JUMP_SECONDS = 10               # Within how long it has to move that far.
 FOLLOW_SECONDS = 600            # How long the other venue is watched to follow.
 AGREE = 0.005                   # How near the price history and the books must be to agree.
@@ -67,9 +75,11 @@ def timeline(com_rows, us_rows, max_age=MAX_AGE):
 
 def mid(book):
     """
-    The midpoint of a book's best bid and ask, or None without both.
+    The midpoint of a book's best bid and ask, or None without both, or when they are more than MAX_SPREAD apart.
     """
-    return (book[0][0][0] + book[1][0][0]) / 2 if book and book[0] and book[1] else None
+    if not book or not book[0] or not book[1] or book[1][0][0] - book[0][0][0] > MAX_SPREAD + 1e-9:
+        return None
+    return (book[0][0][0] + book[1][0][0]) / 2
 
 
 def side_of(book, side):
@@ -173,11 +183,11 @@ def paid(stretch, pair, market):
     return (won if stretch["side"] == "long" else 1 - won) - ask - (pair.fee_coefficient or polymarket_us.TAKER_FEE) * ask * (1 - ask)
 
 
-def percentiles(values, at=(25, 50, 75)):
+def percentiles(values, at=(25, 50, 75), digits=0):
     """
-    The percentiles of values, as text, or '-' when there are none.
+    The percentiles of values, as text, to digits after the point, or '-' when there are none.
     """
-    return "/".join(f"{np.percentile(values, q):.0f}" for q in at) if values else "-"
+    return "/".join(f"{np.percentile(values, q):.{digits}f}" for q in at) if values else "-"
 
 
 @dataclass
@@ -242,7 +252,7 @@ def report(found):
             made = [m for m in f.made if m is not None]
             lines.append(f"    cheaper on Polymarket US than polymarket.com's bid, fee included: {len(stretches):,} stretches, "
                          f"{len(stretches) / hours:.1f} an hour, lasting {percentiles([s['end'] - s['start'] for s in stretches])} seconds, "
-                         f"by up to {percentiles([s['cents'] for s in stretches])} cents, "
+                         f"by up to {percentiles([s['cents'] for s in stretches], digits=1)} cents, "
                          f"with ${percentiles([s['dollars'] for s in stretches])} to buy that cheap")
             lines.append(f"        a contract bought at each start: {len(made):,} resolved, "
                          + (f"made {statistics.mean(made) * 100:+.1f} cents on average, {sum(m > 0 for m in made) / len(made):.0%} of them won"
@@ -259,14 +269,23 @@ def report(found):
 # MAIN
 
 if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description="Measure how Polymarket US's prices trail polymarket.com's, from both venues' books recorded.")
+    ap.add_argument("--since", help="study only what was recorded from this UTC time on, such as 2026-10-13T17:00")
+    args = ap.parse_args()
+    since = epoch(f"{args.since}Z") if args.since else 0.0
+    if since is None:
+        ap.error(f"--since {args.since} is not a time like 2026-10-13T17:00")
     conn = database.connect()
     pairs = database.lag_pairs(conn)
     markets = database.markets(conn)
-    found = defaultdict(Findings)
+    found, studied = defaultdict(Findings), 0
     for pair in pairs.values():
-        com_rows, us_rows = database.lag_books(conn, "polymarket", pair.token_id), database.lag_books(conn, "polymarket_us", pair.slug)
+        com_rows, us_rows = ([r for r in database.lag_books(conn, venue, key) if r.time >= since]
+                             for venue, key in (("polymarket", pair.token_id), ("polymarket_us", pair.slug)))
         if com_rows and us_rows:
-            study(pair, com_rows, us_rows, database.us_prices(conn, pair.slug), markets.get(pair.condition_id), found)
-    first = min((p.first_seen for p in pairs.values()), default=0)
-    print(f"{len(pairs):,} markets recorded since {datetime.fromtimestamp(first, UTC):%Y-%m-%d %H:%M} UTC")
+            prices = [p for p in database.us_prices(conn, pair.slug) if p.time >= since]
+            study(pair, com_rows, us_rows, prices, markets.get(pair.condition_id), found)
+            studied += 1
+    first = since or min((p.first_seen for p in pairs.values()), default=0)
+    print(f"{studied:,} markets recorded since {datetime.fromtimestamp(first, UTC):%Y-%m-%d %H:%M} UTC")
     print("\n".join(report(found)))

@@ -54,7 +54,11 @@ the US, where a copy would trade: its events and markets, each market's
 order book, and each market's best prices about once a minute, back to
 its first markets in late 2025. Its markets are not polymarket.com's,
 but a game's event carries the same game id on both, which is how the
-two are matched.
+two are matched. The public order books come through a cache and may be
+30 seconds old, so live books come from its market feed, a websocket
+signed with the account's key, the same key PredictionArbitrageTrader
+trades with, kept in `data/polymarket_us_key_id.txt` and
+`data/polymarket_us_secret_key.txt`.
 
 `api/http.py` is what they share: one connection pool, a rate limiter
 per host, weighted for Hyperliquid, and retries of network errors, rate
@@ -142,10 +146,10 @@ costs.
 
 `record/lag.py` records polymarket.com's and Polymarket US's books side
 by side, live, for the moneylines, totals, and soccer results of the
-games under way or starting within the hour: polymarket.com's every two
-seconds, all in one call, and Polymarket US's one market at a time as
-fast as its limit lets, those of games under way twice as often. A book
-is stored when it changes, and at least once a minute. `analysis/lag.py`
+games under way or starting within the hour: polymarket.com's every
+second, all in one call, and Polymarket US's each time they change, from
+its market feed. A book is stored when it changes, and at least once a
+minute. `analysis/lag.py`
 then times how long Polymarket US takes to follow a move of
 polymarket.com's, finds the stretches when buying on Polymarket US cost
 less, fee included, than polymarket.com's bid, with how long they
@@ -191,8 +195,10 @@ reads the games, Polymarket US's markets, and its prices, and then
 `python3 -m copytrader.analysis.copy` prints the simulation.
 
 The lag recorder runs apart from the recorder, `python3 -m
-copytrader.record.lag`, until stopped, and `python3 -m
-copytrader.analysis.lag` reports on what it has recorded so far.
+copytrader.record.lag`, until stopped, with the Polymarket US key in
+`data/`, and `python3 -m copytrader.analysis.lag` reports on what it has
+recorded so far, `--since` a time to leave out the books recorded before
+it read the feed, on 2026-10-13.
 
 ## Deployment
 

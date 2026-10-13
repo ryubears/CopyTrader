@@ -27,9 +27,10 @@ def us(time, bid, ask, size=100):
 
 
 def test_each_moment_has_the_latest_book_of_each_venue_unless_it_is_too_old():
-    line = lag.timeline([com(0, 0.4, 0.5), com(100, 0.4, 0.5)], [us(1, 0.39, 0.51)])
+    line = lag.timeline([com(0, 0.43, 0.47), com(100, 0.43, 0.47)], [us(1, 0.39, 0.51)])
     assert [(t, c is not None, u is not None) for t, c, u in line] == [(0, True, False), (1, True, True), (100, True, False)]
     assert line[1][2] == ([(0.39, 100)], [(0.51, 100)]) and lag.mid(line[1][1]) == pytest.approx(0.45)
+    assert lag.mid(line[1][2]) is None                     # A spread of 12 cents gives no price.
 
 
 def test_a_move_on_one_venue_is_timed_until_the_other_has_moved_half_as_far():

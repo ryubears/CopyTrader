@@ -1,11 +1,14 @@
 """
 Tests for the Polymarket US client: paging events over a window of start times, asking for a stretch of price history,
-and turning markets and prices into models, with no network.
+signing and subscribing to the market feed, and turning markets, prices and books into models, with no network.
 """
 
+import base64
 import httpx
+import json
 import pytest
 from copytrader.api import polymarket_us
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 # A game's event and its moneyline as Polymarket US sends them, cut down from real answers.
 MONEYLINE = {"id": "2", "slug": "aec-nfl-car-gb-2025-11-02", "question": "Carolina vs. Green Bay", "title": "CAR Panthers vs GB Packers",
@@ -62,5 +65,45 @@ def test_a_book_keeps_its_best_levels_best_first_and_the_venues_time_to_the_micr
             "bids": [{"px": {"value": "0.4275"}, "qty": "8355.01"}, {"px": {"value": "0.425"}, "qty": "9957"}]}
     row = polymarket_us.parse_lag_book("s", book, 5.0, 1)
     assert (row.venue, row.key, row.time, row.bids, row.asks) == ("polymarket_us", "s", 5.0, "[[0.4275,8355.01]]", "[[0.43,11901.01]]")
+    unsorted = {"bids": [{"px": {"value": "0.40"}, "qty": "5"}, {"px": {"value": "0.42"}, "qty": "0"}, {"px": {"value": "0.41"}, "qty": "7"}],
+                "offers": [{"px": {"value": "0.45"}, "qty": "1"}, {"px": {"value": "0.44"}, "qty": "2"}]}
     assert row.venue_time == pytest.approx(1791846424.728998)
     assert polymarket_us.parse_lag_book("s", {"transactTime": "2026-10-12T23:07:04Z"}, 5.0, 1).venue_time == 1791846424.0
+    sorted_ = polymarket_us.parse_lag_book("s", unsorted, 5.0, 2)          # A level with nothing left at it is no level.
+    assert (sorted_.bids, sorted_.asks, sorted_.venue_time) == ("[[0.41,7.0],[0.4,5.0]]", "[[0.44,2.0],[0.45,1.0]]", None)
+
+
+def test_a_request_is_signed_by_the_accounts_key_over_its_time_method_and_path(monkeypatch):
+    key = Ed25519PrivateKey.generate()
+    monkeypatch.setattr(polymarket_us, "credentials", lambda: ("key-id", key))
+    monkeypatch.setattr(polymarket_us.time, "time", lambda: 1791892800.123)
+    headers = polymarket_us.signed_headers("GET", "/v1/ws/markets")
+    assert (headers["X-PM-Access-Key"], headers["X-PM-Timestamp"]) == ("key-id", "1791892800123")
+    key.public_key().verify(base64.b64decode(headers["X-PM-Signature"]), b"1791892800123GET/v1/ws/markets")       # Raises if not.
+
+
+def test_the_feed_is_signed_and_subscribed_to_every_book_a_hundred_markets_a_request(monkeypatch):
+    sent, opened = [], {}
+
+    class Connection:
+        def send(self, message):
+            sent.append(json.loads(message))
+
+    def connect(url, additional_headers, **options):
+        opened.update(url=url, headers=additional_headers, **options)
+        return Connection()
+
+    monkeypatch.setattr(polymarket_us, "connect", connect)
+    monkeypatch.setattr(polymarket_us, "signed_headers", lambda method, path: {"signed": f"{method} {path}"})
+    polymarket_us.book_stream([f"m{i:03}" for i in range(150)])
+    assert (opened["url"], opened["headers"], opened["max_queue"]) == (polymarket_us.FEED, {"signed": "GET /v1/ws/markets"}, None)
+    assert [len(m["subscribe"]["marketSlugs"]) for m in sent] == [100, 50] and sent[1]["subscribe"]["marketSlugs"][0] == "m100"
+    assert {(m["subscribe"]["subscriptionType"], m["subscribe"]["responsesDebounced"]) for m in sent} == {("SUBSCRIPTION_TYPE_MARKET_DATA", False)}
+
+
+def test_a_feed_message_gives_its_book_nothing_else_and_raises_an_error():
+    book = {"marketSlug": "s", "bids": [], "offers": [], "state": "MARKET_STATE_OPEN"}
+    assert polymarket_us.streamed_book(json.dumps({"requestId": "books-0", "subscriptionType": "x", "marketData": book})) == book
+    assert polymarket_us.streamed_book(json.dumps({"heartbeat": {}})) is None
+    with pytest.raises(RuntimeError, match="max subscriptions"):
+        polymarket_us.streamed_book(json.dumps({"requestId": "books-10", "error": "max subscriptions per connection reached"}))

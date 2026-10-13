@@ -5,11 +5,12 @@ prices trail polymarket.com's during games, see analysis/lag.py.
 Every REFRESH_SECONDS it reads Polymarket US's events starting from AFTER_START ago to BEFORE_START ahead, and
 polymarket.com's events of the same games, by their game ids, and pairs each open Polymarket US market of the TYPES a
 copy trades with the polymarket.com outcome its long side holds, see analysis/match.py, the games under way first, up
-to MAX_PAIRS. Between refreshes it reads every pair's polymarket.com book, all in one call, every COM_SECONDS, and
-Polymarket US's books one market a call, round and round, as fast as Polymarket US's limit lets, so each comes every few
-seconds, those of the games under way twice as often. A book's best LEVELS levels a side are stored when they differ
-from the last stored, or HEARTBEAT_SECONDS after it, so a stretch without rows is one the recorder did not see. A
-Polymarket US market that has ended is dropped.
+to MAX_PAIRS. Between refreshes it reads every pair's polymarket.com book, all in one call, every COM_SECONDS, and takes
+each change of Polymarket US's books from its market feed as it comes, see api/polymarket_us.py, since the gateway's
+books are up to 30 seconds old. The feed needs the account's key in the data folder. A book's best LEVELS levels a
+side are stored when they differ from the last stored, or HEARTBEAT_SECONDS after it, a Polymarket US book that has not
+changed as well, so a stretch without rows is one the recorder did not see. A Polymarket US market that has ended is
+dropped. When the pairs change, the feed is connected again for the new ones, as it takes no unsubscribing.
 
 Once a pair's game started more than AFTER_START ago, Polymarket US's minute price history of the market over its
 recording is read, to set beside the books, and its polymarket.com market is read again for how it resolved, until it
@@ -23,6 +24,7 @@ Run from src/ with:
 """
 
 import argparse
+import dataclasses
 import itertools
 import json
 import signal
@@ -39,8 +41,8 @@ REFRESH_SECONDS = 600
 BEFORE_START = 3600             # How long before a game starts its markets are recorded.
 AFTER_START = 4 * 3600          # How long after.
 TYPES = ("moneyline", "totals", "drawable_outcome")
-MAX_PAIRS = 150                 # The most markets recorded at once, so each of Polymarket US's books comes every 15 seconds at worst.
-COM_SECONDS = 2                 # Seconds between reads of polymarket.com's books.
+MAX_PAIRS = 150                 # The most markets recorded at once, so polymarket.com's books of all of them take two calls a read.
+COM_SECONDS = 1                 # Seconds between reads of polymarket.com's books.
 COM_BATCH = 100                 # polymarket.com books a call.
 GAMES_BATCH = 50                # Games whose polymarket.com events are asked for a call.
 HEARTBEAT_SECONDS = 60
@@ -115,15 +117,6 @@ def finish(conn, now, log):
     return len(done)
 
 
-def reading_order(pairs, now):
-    """
-    The order Polymarket US's books of the pairs are read in, round and round: the games under way twice a round, as
-    their prices move faster, and the rest once.
-    """
-    playing = [p.slug for p in pairs if (epoch(p.game_start) or now) <= now]
-    return playing + [p.slug for p in pairs if (epoch(p.game_start) or now) > now] + playing
-
-
 def store_changed(conn, rows, last):
     """
     Store the rows, LagBooks, that changed(), in order, keeping last, {(venue, key): LagBook}, up to date. Returns a
@@ -138,12 +131,22 @@ def store_changed(conn, rows, last):
     return Counter(f"{row.venue} books" for row in keep)
 
 
+def heartbeats(last, slugs, now):
+    """
+    For each of the markets, slugs, whose book has come from Polymarket US's feed on its connection, a copy of the last
+    book stored, timed now, if that was HEARTBEAT_SECONDS ago or more: the feed sends a book only when it changes, so
+    one not sent since is still the book. last is {(venue, key): LagBook}, see store_changed().
+    """
+    rows = (last.get(("polymarket_us", slug)) for slug in sorted(slugs))
+    return [dataclasses.replace(row, time=now) for row in rows if row and now - row.time >= HEARTBEAT_SECONDS]
+
+
 def record(conn, seconds=None, log=log):
     """
     Record both venues' books, see the top of this file, until seconds have passed, or for good without.
     """
     started = time.time()
-    pairs, order, turn = {}, [], 0
+    pairs, stream, streamed = {}, None, set()
     last, waiting, counts = {}, [], Counter()
     refreshed = com_read = flushed = status_at = 0.0
     log(f"recording both venues' books of the games from {BEFORE_START // 60} minutes before their start to {AFTER_START // 3600} hours after")
@@ -155,7 +158,10 @@ def record(conn, seconds=None, log=log):
                 try:
                     found = find_pairs(now)
                     counts["pairs"] += database.store(conn, found)
-                    pairs, order = {p.slug: p for p in found}, reading_order(found, now)
+                    if stream and {p.slug for p in found} != set(pairs):
+                        stream.close()
+                        stream = None
+                    pairs = {p.slug: p for p in found}
                     under_way = sum((epoch(p.game_start) or now) <= now for p in found)
                     log(f"{len(found):,} markets of {len({p.game_id for p in found}):,} games to record, {under_way:,} of them under way")
                     finish(conn, now, log)
@@ -165,30 +171,40 @@ def record(conn, seconds=None, log=log):
                 time.sleep(min(30, max(0.0, REFRESH_SECONDS - (time.time() - refreshed))))
                 continue
             try:
+                if stream is None:
+                    stream, streamed = polymarket_us.book_stream(pairs), set()
                 if now - com_read >= COM_SECONDS:
                     com_read = now
                     for chunk in itertools.batched([p.token_id for p in pairs.values()], COM_BATCH):
                         books = polymarket.books(list(chunk))
                         seen = time.time()
                         waiting += [polymarket.parse_book(b, seen, LEVELS) for b in books]
-                slug = order[turn % len(order)]
-                turn += 1
-                book = polymarket_us.book(slug)
-                if book.get("state") in ENDED:
-                    pairs.pop(slug, None)
-                    order = [s for s in order if s != slug]
-                else:
+                try:
+                    book = polymarket_us.streamed_book(stream.recv(timeout=max(0.0, com_read + COM_SECONDS - time.time())))
+                except TimeoutError:
+                    book = None
+                slug = book.get("marketSlug") if book else None
+                if slug in pairs and book.get("state") in ENDED:
+                    del pairs[slug]
+                elif slug in pairs:
                     waiting.append(polymarket_us.parse_lag_book(slug, book, time.time(), LEVELS))
+                    streamed.add(slug)
             except Exception as error:
-                log(with_traceback("reading the books failed, going on in 5 seconds", error))
+                log(with_traceback("reading the books failed, connecting again in 5 seconds", error))
+                if stream:
+                    stream.close()
+                stream = None
                 time.sleep(5)
             if time.time() - flushed >= FLUSH_SECONDS:
                 counts.update(store_changed(conn, waiting, last))
+                counts.update(store_changed(conn, heartbeats(last, streamed & set(pairs), time.time()), last))
                 waiting, flushed = [], time.time()
             if time.time() - status_at >= STATUS_SECONDS:
                 status_at = time.time()
                 log(f"recording {len(pairs):,} markets; since the start: " + ", ".join(f"{n:,} {what}" for what, n in sorted(counts.items())))
     finally:
+        if stream:
+            stream.close()
         counts.update(store_changed(conn, waiting, last))
         log("since the start: " + ", ".join(f"{n:,} {what}" for what, n in sorted(counts.items())))
 
