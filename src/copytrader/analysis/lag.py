@@ -7,7 +7,7 @@ is older than MAX_AGE, a little more than the recorder's heartbeat, so a stretch
 A pair's outcome is the one Polymarket US's long side holds, so its polymarket.com book and Polymarket US's are of the
 same outcome, and the other side's book is the same book turned over: its ask one less the outcome's bid.
 
-The report gives, by market type and by whether the game was under way:
+The report gives, by market type, or by league and market type with --by-league, and by whether the game was under way:
 
     lag        how long after polymarket.com's mid moves JUMP or more within JUMP_SECONDS Polymarket US's mid has moved
                half as far the same way, at most FOLLOW_SECONDS, and the same the other way round, to see which leads.
@@ -26,7 +26,7 @@ Books recorded before Polymarket US's came from its market feed were up to 30 se
 
 Run from src/ with:
     python3 -m copytrader.analysis.lag
-    python3 -m copytrader.analysis.lag --since 2026-10-13T17:00
+    python3 -m copytrader.analysis.lag --since 2026-10-13T17:00 --by-league
 """
 
 import argparse
@@ -35,7 +35,7 @@ import json
 import numpy as np
 import statistics
 from collections import defaultdict
-from copytrader.analysis.copy import payout
+from copytrader.analysis.copy import league, payout
 from copytrader.api import polymarket_us
 from copytrader.common.timeutil import epoch
 from copytrader.db import database
@@ -204,41 +204,45 @@ class Findings:
     history: tuple = (0, 0, 0)                              # history_check(), summed.
 
 
-def study(pair, com_rows, us_rows, prices, market, found):
+def study(pair, com_rows, us_rows, prices, market, found, group=None):
     """
     Add what one pair showed, from its books on either venue, its minute price history, and its polymarket.com market, to
-    found, {(market_type, under way): Findings}, each finding by whether it came after its game's start.
+    found, {(group, under way): Findings}, each finding by whether it came after its game's start. The group is the
+    pair's market type unless given.
     """
+    group = group or pair.market_type
     start = epoch(pair.game_start) or 0
     line = timeline(com_rows, us_rows)
     playing = {False: [entry for entry in line if entry[0] < start], True: [entry for entry in line if entry[0] >= start]}
     for part in (False, True):
         if len(playing[part]) >= 2:
-            found[(pair.market_type, part)].pairs += 1
+            found[(group, part)].pairs += 1
     for a, b in itertools.pairwise(line):
         if a[1] and a[2]:
-            found[(pair.market_type, a[0] >= start)].seconds += b[0] - a[0]
+            found[(group, a[0] >= start)].seconds += b[0] - a[0]
     for leader in (1, 2):
         for t, seconds in follows(line, leader):
-            f = found[(pair.market_type, t >= start)]
+            f = found[(group, t >= start)]
             (f.com_lags if leader == 1 else f.us_lags).append(seconds)
     for stretch in cheap_stretches(line, pair.fee_coefficient):
-        f = found[(pair.market_type, stretch["start"] >= start)]
+        f = found[(group, stretch["start"] >= start)]
         f.cheap.append(stretch)
         f.made.append(paid(stretch, pair, market))
     for part in (False, True):
-        f = found[(pair.market_type, part)]
+        f = found[(group, part)]
         checked = history_check([p for p in prices if (p.time >= start) == part], us_rows)
         f.history = tuple(a + b for a, b in zip(f.history, checked, strict=True))
 
 
 def report(found):
     """
-    Lines of the report from the Findings, {(market_type, under way): Findings}.
+    Lines of the report from the Findings, {(group, under way): Findings}.
     """
     lines = []
-    for (kind, playing), f in sorted(found.items()):
-        name = f"{kind}, {'under way' if playing else 'before the start'}"
+    for (group, playing), f in sorted(found.items()):
+        if not f.pairs:
+            continue
+        name = f"{group}, {'under way' if playing else 'before the start'}"
         hours = f.seconds / 3600
         lines.append(f"{name}: {f.pairs} markets, {hours:,.1f} hours of both books")
         for leader, label in (("com", "polymarket.com moved first"), ("us", "Polymarket US moved first")):
@@ -271,6 +275,7 @@ def report(found):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Measure how Polymarket US's prices trail polymarket.com's, from both venues' books recorded.")
     ap.add_argument("--since", help="study only what was recorded from this UTC time on, such as 2026-10-13T17:00")
+    ap.add_argument("--by-league", action="store_true", help="report each league's markets of each type apart")
     args = ap.parse_args()
     since = epoch(f"{args.since}Z") if args.since else 0.0
     if since is None:
@@ -284,7 +289,8 @@ if __name__ == "__main__":
                              for venue, key in (("polymarket", pair.token_id), ("polymarket_us", pair.slug)))
         if com_rows and us_rows:
             prices = [p for p in database.us_prices(conn, pair.slug) if p.time >= since]
-            study(pair, com_rows, us_rows, prices, markets.get(pair.condition_id), found)
+            group = f"{league(pair.slug)} {pair.market_type}" if args.by_league else None
+            study(pair, com_rows, us_rows, prices, markets.get(pair.condition_id), found, group)
             studied += 1
     first = since or min((p.first_seen for p in pairs.values()), default=0)
     print(f"{studied:,} markets recorded since {datetime.fromtimestamp(first, UTC):%Y-%m-%d %H:%M} UTC")

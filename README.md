@@ -198,7 +198,7 @@ The lag recorder runs apart from the recorder, `python3 -m
 copytrader.record.lag`, until stopped, with the Polymarket US key in
 `data/`, and `python3 -m copytrader.analysis.lag` reports on what it has
 recorded so far, `--since` a time to leave out the books recorded before
-it read the feed, on 2026-10-13.
+it read the feed, on 2026-10-13, and `--by-league` for each league apart.
 
 ## Deployment
 

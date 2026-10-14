@@ -83,3 +83,5 @@ def test_a_pair_is_studied_before_and_after_its_games_start_and_reported():
     assert playing.made == [pytest.approx(1 - 0.51 - FEE * 0.51 * 0.49)] and playing.history == (1, 1, 0)
     lines = lag.report(found)
     assert lines[0].startswith("moneyline, before the start: 1 markets") and "1 resolved, made +" in "\n".join(lines)
+    lag.study(PAIR, rows_com, rows_us, [], market(), found, "nhl moneyline")
+    assert found[("nhl moneyline", True)].com_lags == [18]

@@ -193,7 +193,7 @@ def record(conn, seconds=None, log=log):
                 log(with_traceback("reading the books failed, connecting again in 5 seconds", error))
                 if stream:
                     stream.close()
-                stream = None
+                stream, streamed = None, set()          # No book is known until the next connection sends it.
                 time.sleep(5)
             if time.time() - flushed >= FLUSH_SECONDS:
                 counts.update(store_changed(conn, waiting, last))
