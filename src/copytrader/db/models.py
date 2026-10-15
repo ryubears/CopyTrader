@@ -231,10 +231,10 @@ class UsMarket:
 @dataclass
 class UsPrice:
     """
-    What buying either side of a Polymarket US market cost at a moment.
+    What buying either side of a Polymarket US market cost at the end of a minute.
     """
     slug: str
-    time: int                   # Seconds since 1970.
+    time: int                   # Seconds since 1970, as Polymarket US stamps it: the minute's start, see api/polymarket_us.py PRICE_OFFSET.
     long_price: float | None    # The long side's display price, normally its best ask.
     short_price: float | None   # The short side's, normally one less the long side's best bid.
 

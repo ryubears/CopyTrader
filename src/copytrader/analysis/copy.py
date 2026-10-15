@@ -15,9 +15,10 @@ What a copy does. Each trader copied gets an equal share of the capital, their s
 an account of its own: what its buys cost comes out of it and what they pay goes back, so a trader who loses loses their
 sleeve and no more, and the others' are untouched. When they buy an outcome of a polymarket.com market that matches a
 Polymarket US market, see analysis/match.py, the copy buys the side of that market holding the outcome a wait later, at
-Polymarket US's price then, the side's best ask, from its price history, see history/polymarket_us.py, unless that is
-more than CHASE above what the trader paid, or, with --floor, more than that below it. Polymarket US's minute prices
-are often well below polymarket.com's during a game, too often to trust them as fills, which --floor leaves out. The copy
+Polymarket US's price then, the side's best ask, from its price history, see history/polymarket_us.py, each point of it
+taken as the book at the end of its minute, see api/polymarket_us.py, unless that is more than CHASE above what the
+trader paid, or, with --floor, more than that below it. Polymarket US's minute prices are often well below
+polymarket.com's during a game, too often to trust them as fills, which --floor leaves out. The copy
 spends BUY_SHARE of the sleeve, more as the trade is bigger than the trader's median buy, up to SIZE_RANGE times, and
 less as it is smaller, but no more than is left in the sleeve. When the trader sells, the copy sells as large a share of
 its holding as they sold of theirs, at the side's best bid then, unless that is more than CHASE below what the trader
@@ -156,9 +157,11 @@ def plan(histories, pool, cuts, summaries, copied=COPIED):
 
 def prices_of(points):
     """
-    A market's stored UsPrice points as arrays of their times, long prices, and short prices, for price_after().
+    A market's stored UsPrice points as arrays of the times their prices were the book's, PRICE_OFFSET after their
+    stamps, see api/polymarket_us.py, their long prices, and their short prices, for price_after().
     """
-    return np.array([p.time for p in points], dtype=float), [p.long_price for p in points], [p.short_price for p in points]
+    times = np.array([p.time + polymarket_us.PRICE_OFFSET for p in points], dtype=float)
+    return times, [p.long_price for p in points], [p.short_price for p in points]
 
 
 def usable(long, short):

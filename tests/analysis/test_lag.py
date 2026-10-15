@@ -53,8 +53,9 @@ def test_a_cheap_stretch_counts_every_dollar_offered_below_polymarket_coms_bid_f
     assert [(s["side"], s["ask"], s["dollars"]) for s in lag.cheap_stretches(short, FEE)] == [("short", pytest.approx(0.40), pytest.approx(4.0))]
 
 
-def test_the_price_history_is_set_beside_the_book_recorded_at_its_time():
-    prices = [UsPrice("s", 110, 0.45, 0.60), UsPrice("s", 120, 0.40, 0.60), UsPrice("s", 500, 0.40, 0.60), UsPrice("s", 50, 0.45, 0.60)]
+def test_the_price_history_is_set_beside_the_book_recorded_at_the_end_of_its_minute():
+    prices = [UsPrice("s", 45, 0.45, 0.60), UsPrice("s", 60, 0.40, 0.60), UsPrice("s", 500, 0.40, 0.60), UsPrice("s", 30, 0.45, 0.60)]
+    # Stamped 45, its minute ends after the book at 100 was read; stamped 30, it ends before, with no book yet.
     assert lag.history_check(prices, [us(100, 0.40, 0.45)]) == (2, 1, 1)
 
 
@@ -76,7 +77,7 @@ def test_a_pair_is_studied_before_and_after_its_games_start_and_reported():
     found = defaultdict(lag.Findings)
     rows_com = [com(0, 0.49, 0.51), com(12, 0.55, 0.57), com(40, 0.55, 0.57)]
     rows_us = [us(1, 0.49, 0.51), us(13, 0.48, 0.50), us(30, 0.54, 0.56)]
-    lag.study(PAIR, rows_com, rows_us, [UsPrice("aec-x", 13, 0.50, 0.52)], market(), found)
+    lag.study(PAIR, rows_com, rows_us, [UsPrice("aec-x", 13 - 60, 0.50, 0.52)], market(), found)     # The book at 13, in play.
     before, playing = found[("moneyline", False)], found[("moneyline", True)]
     assert (before.pairs, playing.pairs, playing.com_lags, len(playing.cheap)) == (1, 1, [18], 1)
     # Cheap from 12s, when polymarket.com's bid rose to 0.55 and Polymarket US still asked 0.51, until its ask rose at 30s.

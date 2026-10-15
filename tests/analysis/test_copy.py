@@ -69,8 +69,9 @@ def test_signals_copy_buys_only_while_copied_and_sales_as_a_share_of_the_holding
 def test_the_fee_is_rounded_half_to_even_to_the_cent_and_prices_go_stale():
     assert copy.fee(0.0695, 100, 0.5) == 1.74 and copy.fee(None, 100, 0.5) == 1.74 and copy.fee(0.1, 100, 0.5) == 2.5
     prices = copy.prices_of([UsPrice("s", 100, 0.4, 0.65), UsPrice("s", 160, None, 0.6)])
-    assert copy.price_after(prices, 90) == (0.4, 0.65) and copy.price_after(prices, 150) is None
-    assert copy.price_after(prices, 100 - copy.STALE - 1) is None and copy.price_after(prices, 200) is None
+    # A point stamped 100 is the book at 160, the end of its minute.
+    assert copy.price_after(prices, 150) == (0.4, 0.65) and copy.price_after(prices, 170) is None
+    assert copy.price_after(prices, 160 - copy.STALE - 1) is None and copy.price_after(prices, 230) is None
     assert copy.ask((0.4, 0.65), "long") == 0.4 and copy.ask((0.4, 0.65), "short") == 0.65
     assert copy.bid((0.4, 0.65), "long") == pytest.approx(0.35) and copy.bid((0.4, 0.65), "short") == pytest.approx(0.6)
 

@@ -18,8 +18,9 @@ The report gives, by market type, or by league and market type with --by-league,
                lasted, how many cents it was cheaper by at most, how many dollars Polymarket US's asks held at prices that
                cheap, of its best levels recorded, and, once the market resolved, what a contract bought at its start made.
     history    how often Polymarket US's minute price history, which analysis/copy.py priced copies by, agreed within
-               AGREE with the best ask and bid recorded at the same moment, and how often it showed a price more than
-               CHEAPER below the recorded ask, a fill a copy could not have had.
+               AGREE with the best ask and bid recorded at the end of each point's minute, see api/polymarket_us.py
+               PRICE_OFFSET, and how often it showed a price more than CHEAPER below the recorded ask, a fill a copy
+               could not have had.
 
 Books recorded before Polymarket US's came from its market feed were up to 30 seconds old, see record/lag.py, so
 --since leaves them out.
@@ -151,14 +152,16 @@ def cheap_stretches(line, coefficient):
 def history_check(prices, us_rows, max_age=MAX_AGE):
     """
     How Polymarket US's minute price history compares with the books recorded: of the points with a recorded book at the
-    time, how many agreed within AGREE on both sides, and how many showed the long or short price more than CHEAPER below
-    the recorded ask, as (points, agreed, cheaper).
+    end of their minute, PRICE_OFFSET after their stamps, see api/polymarket_us.py, how many agreed within AGREE on both
+    sides, and how many showed the long or short price more than CHEAPER below the recorded ask, as (points, agreed,
+    cheaper).
     """
     times = np.array([r.time for r in us_rows])
     points = agreed = cheaper = 0
     for p in prices:
-        i = int(np.searchsorted(times, p.time, side="right")) - 1
-        if i < 0 or p.time - times[i] > max_age or p.long_price is None or p.short_price is None:
+        at = p.time + polymarket_us.PRICE_OFFSET
+        i = int(np.searchsorted(times, at, side="right")) - 1
+        if i < 0 or at - times[i] > max_age or p.long_price is None or p.short_price is None:
             continue
         bids, asks = levels(us_rows[i])
         if not bids or not asks:
@@ -230,7 +233,7 @@ def study(pair, com_rows, us_rows, prices, market, found, group=None):
         f.made.append(paid(stretch, pair, market))
     for part in (False, True):
         f = found[(group, part)]
-        checked = history_check([p for p in prices if (p.time >= start) == part], us_rows)
+        checked = history_check([p for p in prices if (p.time + polymarket_us.PRICE_OFFSET >= start) == part], us_rows)
         f.history = tuple(a + b for a, b in zip(f.history, checked, strict=True))
 
 
@@ -288,7 +291,7 @@ if __name__ == "__main__":
         com_rows, us_rows = ([r for r in database.lag_books(conn, venue, key) if r.time >= since]
                              for venue, key in (("polymarket", pair.token_id), ("polymarket_us", pair.slug)))
         if com_rows and us_rows:
-            prices = [p for p in database.us_prices(conn, pair.slug) if p.time >= since]
+            prices = [p for p in database.us_prices(conn, pair.slug) if p.time + polymarket_us.PRICE_OFFSET >= since]
             group = f"{league(pair.slug)} {pair.market_type}" if args.by_league else None
             study(pair, com_rows, us_rows, prices, markets.get(pair.condition_id), found, group)
             studied += 1

@@ -12,7 +12,9 @@ database stores.
 A market is one instrument with two sides. Its long side holds the outcome its side names, usually the first of its
 outcomes but not always, and its short side the other, so buying the short side is buying the other outcome. Its price
 history gives, about once a minute, the long side's display price, normally the best ask, and the short side's, normally
-one less the best bid, so what buying either side cost at the time. A sports event that is a game carries the same
+one less the best bid, so what buying either side cost. Each point is the book at the end of a minute, stamped with the
+minute's start, PRICE_OFFSET before, as found on 2026-10-15 against the books of the market feed: in play, 95% of points
+matched the book a minute after their stamp, 33% the book at it. A sports event that is a game carries the same
 gameId as polymarket.com's event for that game, or, in the smaller leagues, only Sportradar's id, 'sr:sport_event:73835474',
 whose number polymarket.com uses as its gameId then, see game_id().
 
@@ -39,6 +41,7 @@ GATEWAY = "https://gateway.polymarket.us/v1"
 LIMITER = RateLimiter(10)       # Requests a second, half the 20 a second an IP documented for price history.
 EVENTS_PAGE = 20                # Events per call. Each comes with its markets, hundreds for a game, 15 MB a page at most.
 PRICES_SPAN = DAY               # The longest stretch of price history one call is meant for.
+PRICE_OFFSET = 60               # Seconds after a price history point's stamp that its prices were the book's, the end of its minute.
 TAKER_FEE = 0.0695              # The taker fee's coefficient where a market gives none: fee = coefficient * contracts * p * (1 - p).
 FEED = "wss://api.polymarket.us/v1/ws/markets"
 FEED_PATH = "/v1/ws/markets"    # The part of FEED a signature covers.
@@ -127,7 +130,8 @@ def streamed_book(message):
 def price_history(slug, start, end):
     """
     A market's display prices from start to end, in seconds since 1970, at most PRICES_SPAN apart, oldest first: a list of
-    {"timestamp": ..., "longPrice": ..., "shortPrice": ...} about once a minute, empty for a market with none stored.
+    {"timestamp": ..., "longPrice": ..., "shortPrice": ...} about once a minute, each the prices PRICE_OFFSET after its
+    timestamp, empty for a market with none stored.
     """
     params = {"symbol": slug, "timestamp.startTimestamp": int(start), "timestamp.endTimestamp": int(end), "fidelity": 1}
     return get_json(f"{GATEWAY}/price-history", params, LIMITER).get("history") or []
