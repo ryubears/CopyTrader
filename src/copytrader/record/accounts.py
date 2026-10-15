@@ -57,13 +57,21 @@ def start(conn, table, address, now):
 
 def store_rows(conn, rows, parse):
     """
-    Store up to ROWS_PER_READ rows, read oldest first, each turned into its model by parse, CHUNK at a time as they come.
-    Returns how many were new, and whether the rows ran out before ROWS_PER_READ.
+    Store up to ROWS_PER_READ rows, read oldest first, each turned into its model by parse, CHUNK at a time as they come,
+    and those read before a failure too, so a read that fails partway keeps all it read. Returns how many were new, and
+    whether the rows ran out before ROWS_PER_READ.
     """
     stored = taken = 0
-    for chunk in itertools.batched(itertools.islice(rows, ROWS_PER_READ), CHUNK):      # The last chunk may be short.
-        stored += database.store(conn, [parse(row) for row in chunk])
-        taken += len(chunk)
+    chunk = []
+    try:
+        for row in itertools.islice(rows, ROWS_PER_READ):
+            chunk.append(parse(row))
+            taken += 1
+            if len(chunk) == CHUNK:
+                stored += database.store(conn, chunk)
+                chunk = []
+    finally:
+        stored += database.store(conn, chunk)       # The last chunk, short, or the one a failure cut short.
     return stored, taken < ROWS_PER_READ
 
 

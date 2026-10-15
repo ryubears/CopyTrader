@@ -58,8 +58,9 @@ def paged(body, start, end, page):
     """
     Every row of an info call over time from start to end, in milliseconds since 1970 and both included, oldest first,
     a page a call. A full page may stop partway through a millisecond, so the rows at its last time are held back and
-    asked for again as the start of the next page. Raises ValueError for a full page all at one time, which paging
-    cannot get past.
+    asked for again as the start of the next page. A full page all at one millisecond is as much of it as can be read,
+    since a call starts at a millisecond, so it is kept and the next page starts at the millisecond after, the rest of
+    that one skipped: on 2026-10-15 two accounts had more than a page of fills in one millisecond.
     """
     while True:
         rows = info({**body, "startTime": start, "endTime": end}, rows_per_weight=ROWS_PER_WEIGHT)
@@ -68,7 +69,9 @@ def paged(body, start, end, page):
             return
         last = rows[-1]["time"]
         if last == start:
-            raise ValueError(f"a full page of {body['type']} rows all at {start}, which paging cannot get past")
+            yield from rows
+            start += 1
+            continue
         yield from (row for row in rows if row["time"] < last)
         start = last
 

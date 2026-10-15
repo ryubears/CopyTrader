@@ -102,7 +102,7 @@ def test_a_read_that_fails_partway_keeps_what_it_stored(tmp_path, monkeypatch):
     monkeypatch.setattr(hyperliquid, "fills", fills)
     with pytest.raises(RequestFailed):
         accounts.read_fills(conn, "0xa", NOW)
-    assert database.last_time(conn, "hl_fills", "0xa") == 2         # The first chunk was stored, the third fill was not.
+    assert database.last_time(conn, "hl_fills", "0xa") == 3         # The first chunk, and the third fill read before the failure.
 
 
 def test_positions_store_the_account_and_each_position(tmp_path, monkeypatch):

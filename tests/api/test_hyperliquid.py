@@ -5,7 +5,6 @@ its rows into models, with no network.
 
 import httpx
 import json
-import pytest
 from copytrader.api import hyperliquid
 from copytrader.db.models import Funding
 
@@ -87,11 +86,12 @@ def test_paging_stops_at_the_end_time(serve, monkeypatch):
     assert all(json.loads(request.content)["endTime"] == 4 for request in sent)
 
 
-def test_a_full_page_all_at_one_time_raises_rather_than_loops(serve, monkeypatch):
+def test_a_full_page_all_at_one_millisecond_is_kept_and_paging_goes_on_from_the_next(serve, monkeypatch):
     monkeypatch.setattr(hyperliquid, "LEDGER_PAGE", 2)
-    serve(over_time([{"time": 7}] * 3, 2))
-    with pytest.raises(ValueError, match="all at 7"):
-        list(hyperliquid.ledger("0xabc", 7))
+    rows = [{"time": 5}, {"time": 7, "n": 1}, {"time": 7, "n": 2}, {"time": 7, "n": 3}, {"time": 9}]
+    sent = serve(over_time(rows, 2))
+    assert list(hyperliquid.ledger("0xabc", 5)) == [rows[0], rows[1], rows[2], rows[4]]     # The third row at 7 cannot be read.
+    assert [json.loads(request.content)["startTime"] for request in sent] == [5, 7, 8]
 
 
 def test_rows_spend_their_extra_weight_once_the_answer_is_in(serve, monkeypatch):
